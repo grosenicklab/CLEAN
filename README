@@ -1,0 +1,3 @@
+Cornell Longitudinal Electroencephalography And Neurostimulation (CLEAN).
+
+This library is a fully pythonic preprocessing and analysis library for EEG and simultaneous TMS+EEG data, particularly for longitudinal data.
