@@ -4,12 +4,12 @@
 # 
 # Written by Sanweda Mahagabin and Logan Grosenick, 2023.
 
-# This is a ommand-line callable function to run the CLEAN preprocessing pipeline 
+# This is a command-line callable function to run the CLEAN preprocessing pipeline 
 # based on a config file with the desired preprocessing parameters.
 
 # Questions: 
 # (1) Is it always best in all stages to preprocess all the files together? Or should notch filtering and hp filtering be done per-dataset first as we do now? 
-# (2) ...
+# (2) How can we incorporate (or rewrite) the NoiseTools code (http://audition.ens.fr/adc/NoiseTools/) which has methods for nonstationary noise sources (as we might see across concatenated days).
 
 # Import major libraries
 import os, time, sys, re, glob
@@ -23,11 +23,13 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import FastICA
 import scipy
 import pywt
+import seaborn as sns
 
 # Import MNE Python functions
 import mne
 from mne.preprocessing import ICA
 from mne_icalabel import label_components
+from autoreject import AutoReject, Ransac
 
 # Import local functions
 from util.misc import run_command_wrapper
@@ -133,10 +135,25 @@ class Preprocessing(object):
             self.band_pass_high = float(parameters.get('filtering', 'band_pass_high'))
             self.filter_type = str(parameters.get('filtering', 'filter_type'))
 
+            # data cleaning parameters 
+            self.wICA = parameters.get('cleaning', 'wICA')
+            self.wICA_num_components = int(parameters.get('cleaning', 'wICA_num_components'))
+            self.icalabel = parameters.get('cleaning', 'icalabel')
+            self.bad_segment_interpolation = parameters.get('cleaning', 'bad_segment_interpolation')
+            self.segment_interpolation_method = parameters.get('cleaning', 'segment_interpolation_method')
         except Exception as e:
             print('Failure loading parameters with error:',e)       
             pipeline_log.info("  An error occured when loding parameters: " +str(e))
             sys.exit(1)
+
+        # Plot parameters
+        plt.style.use("ggplot")
+        np.seterr(invalid='ignore')
+        sns.set_style("white")
+        sns.set_context("paper")
+        sns.set_palette("deep")
+        plt.rcParams['axes.linewidth'] = 0.5
+        plt.rcParams['figure.dpi'] = 100
 
         self.parameters_file = parameters_file
 
@@ -212,24 +229,36 @@ class Preprocessing(object):
         self.load_data()
         pipeline_log.info('')
 
-        # Run wavelet ICA
-        pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning...'))
-        self._wICA()
-        pipeline_log.info('')
-
         # Re-reference data
         pipeline_log.info(co.color('periwinkle','Re-referencing data to average reference...'))
         self._reference()
         pipeline_log.info('')
 
         # Run ICALabel to detect bad ICs
-        pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning...'))
-        self._iclabel()
+        if self.icalabel:
+            pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning...'))
+            self._iclabel()
+            pipeline_log.info((co.color('white','  Finished ICALabel.')))
+        else: 
+            pipeline_log.info(co.color('periwinkle','Skipping ICALabel...'))
         pipeline_log.info('')
 
-        # Segment, identify bad segments, and intepolate
-        pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
-        self._interpolate_bad_segments()
+        # Run wavelet ICA
+        if self.wICA:
+            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components. (this may take some time)...'))
+            self._wICA()
+            pipeline_log.info((co.color('white','  Finished wICA.')))
+        else:
+            pipeline_log.info(co.color('periwinkle','Skipping wICA...'))
+        pipeline_log.info('')
+
+        # Segment data into epochs, identify remaining bad segments, and intepolate
+        if self.bad_segment_interpolation:
+            pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
+            self._interpolate_bad_segments()
+            pipeline_log.info((co.color('white','  Finished bad segment identification and interpolation.')))
+        else:
+            pipeline_log.info((co.color('white','  Skipping bad segment identification and interpolation.')))
         pipeline_log.info('')
 
         # Generate summary statistics and plots for model assessment 
@@ -241,21 +270,21 @@ class Preprocessing(object):
         self.data = notch_and_hp(self.data)
         self.data_filtered = self.data.copy() # minimally filtered data for plotting
 
-    def _wICA(self,n_components=20):
-        ica = FastICA(n_components=n_components, whiten="arbitrary-variance")
+    def _wICA(self):
+        ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
         ica.fit(self.data.get_data().T)  
         ICs = ica.fit_transform(self.data.get_data().T)
         self.wICs, self.artifacts = wICA(ica, ICs)
         self.data._data -= self.artifacts.T
 
-    def _iclabel(self, n_components=100):
-        self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, n_components=n_components)
+    def _iclabel(self):
+        self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, n_components=self.iclabel_num_components)
 
     def _reference(self, reference_method='average'):
         self.data = self.data.set_eeg_reference(reference_method)
 
     def _interpolate_bad_segments(self):
-        self.data = interpolate_bad_segments(self.data)
+        self.data = interpolate_bad_segments(self.data, method=self.segment_interpolation_method)
 
     def _plot_results(self):
         pass
@@ -318,7 +347,7 @@ def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False,
     return wICs, artifacts
 
 #------------- ICA Label functions -------------#
-def iclabel(mne_raw, n_components=20, keep=["brain", "other"], method='infomax', fit_params=dict(extended=True)):
+def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax', fit_params=dict(extended=True)):
     '''
     Uses the MNE-ICALabel method to classify independent components into six different estimated sources of 
     variability: brain, muscle artifact, eye blink, heart beat, line noise, channel noise, and other.
@@ -336,7 +365,7 @@ def iclabel(mne_raw, n_components=20, keep=["brain", "other"], method='infomax',
         cleaned: a new data file with 
     '''
     # Fit ICA to mne_raw
-    ica = ICA(n_components=n_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
+    ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
     ica.fit(mne_raw)
     
     # Use label_components function from ICLabel library to classify ICs
@@ -350,8 +379,28 @@ def iclabel(mne_raw, n_components=20, keep=["brain", "other"], method='infomax',
     cleaned = ica.apply(reconst_raw, exclude=exclude_idx)
     return ic_labels, ica, cleaned
 
-def interpolate_bad_segments(raw, segment_length=1.0):
-    pass
+def interpolate_bad_segments(raw, segment_length=1.0, method='autoreject'):
+    # generate epochs object from raw
+
+    # Use mne-compatible autoreject library to clean epoched data
+    if method=='autoreject':
+        ar = AutoReject()
+    elif method=='ransac':
+        ar = Ransac()
+    else:
+        raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
+    epochs_clean = ar.fit_transform(epochs)  
+
+def artifact_subspace_reconstruction(raw):
+    '''
+    Apply artifact subspace reconstrution method using a Python implementation of EEGLAB's clear_rawdata ASR method. 
+    See: https://github.com/DiGyt/asrpy.  
+    '''
+    import asrpy
+    asr = asrpy.ASR(sfreq=raw.info["sfreq"], cutoff=20)
+    asr.fit(raw)   
+    raw = asr.transform(raw)
+    return raw
 
 def plot_summary_stats():
     pass
