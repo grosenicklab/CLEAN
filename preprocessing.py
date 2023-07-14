@@ -259,7 +259,7 @@ class Preprocessing(object):
             self._wICA()
             pipeline_log.info((co.color('white','  Finished wICA.')))
         else:
-            pipeline_log.info(co.color('periwinkle','  kipping wICA...'))
+            pipeline_log.info(co.color('periwinkle','  Skipping wICA...'))
         pipeline_log.info('')
 
         # Segment data into epochs, identify remaining bad segments, and interpolate
