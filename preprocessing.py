@@ -64,42 +64,54 @@ class Preprocessing(object):
 
     '''
     def __init__(self, parameters_file):
-       '''
-       Initialize the pipeline. 
-       '''
-       self.date = datetime.now().date().isoformat()
-       self.load_parameters(parameters_file)
+        '''
+        Initialize the pipeline. 
+        '''
+        self.date = datetime.now().date().isoformat()
+        self.load_parameters(parameters_file)
 
-       # Set bad channels container
-       self.bad_channels_list=['VREF']
+        # Set bad channels container
+        self.bad_channels_list=['VREF']
 
-       # Set up a logfile for this run.  We append the date to the 
-       # logfile, so each run of the pipeline is unique.
-       pipeline_log.setLevel(logging.DEBUG)
-       from time import localtime, strftime
-       self.log_path = pjoin(self.results_path, 'logs')
-       if not os.path.exists(self.log_path): os.makedirs(self.log_path)
-       self.local_logfile = pjoin(self.log_path, strftime("%Y-%b-%d-%H:%M:%S_log.txt", localtime()))
-       fh = logging.FileHandler(self.local_logfile)
-       fh.setLevel(logging.DEBUG)
-       format = '%(asctime)s - %(levelname)s - %(message)s'
-       fh_formatter = logging.Formatter(format)
-       fh.setFormatter(fh_formatter)
-       pipeline_log.addHandler(fh)
+        # Make a results folder for this run
+        tmp = os.listdir(self.results_path)
+        if 'results_run' in ''.join(tmp):
+            runs = [i for i in tmp if 'results_run' in i]
+            runs.sort()
+            next_run_num = int(runs[-1].split('_')[-1]) + 1
+        else:
+            next_run_num = 0
+        results_foldername = 'results_run_'+str(next_run_num).zfill(3)
+        self.results_savepath = pjoin(self.results_path, results_foldername)
+        os.makedirs(self.results_savepath)
 
-       # Set up the console handler, which logs INFO and higher level messages.                                                                                            
-       ch = logging.StreamHandler()
-       ch.setLevel(logging.INFO)
-       ch_formatter = logging.Formatter('%(message)s')
-       ch.setFormatter(ch_formatter)
-       pipeline_log.addHandler(ch)
+        # Set up a logfile for this run.  We append the date to the 
+        # logfile, so each run of the pipeline is unique.
+        pipeline_log.setLevel(logging.DEBUG)
+        from time import localtime, strftime
+        self.log_path = pjoin(self.results_savepath, 'logs')
+        if not os.path.exists(self.log_path): os.makedirs(self.log_path)
+        self.local_logfile = pjoin(self.log_path, strftime("%Y-%b-%d-%H:%M:%S_log.txt", localtime()))
+        fh = logging.FileHandler(self.local_logfile)
+        fh.setLevel(logging.DEBUG)
+        format = '%(asctime)s - %(levelname)s - %(message)s'
+        fh_formatter = logging.Formatter(format)
+        fh.setFormatter(fh_formatter)
+        pipeline_log.addHandler(fh)
+
+        # Set up the console handler, which logs INFO and higher level messages.                                                                                            
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch_formatter = logging.Formatter('%(message)s')
+        ch.setFormatter(ch_formatter)
+        pipeline_log.addHandler(ch)
        
-       # Make a copy of the parameters file used for this run
-       import shutil
-       param_path = pjoin(self.results_path, 'parameters')
-       paramcopy_file = pjoin(param_path, strftime("%Y-%b-%d-%H:%M:%S-params.cfg", localtime()))
-       if not os.path.exists(param_path): os.makedirs(param_path)
-       shutil.copyfile(parameters_file, paramcopy_file)
+        # Make a copy of the parameters file used for this run
+        import shutil
+        param_path = pjoin(self.results_savepath, 'parameters')
+        paramcopy_file = pjoin(param_path, strftime("%Y-%b-%d-%H:%M:%S-params.cfg", localtime()))
+        if not os.path.exists(param_path): os.makedirs(param_path)
+        shutil.copyfile(parameters_file, paramcopy_file)
                      
     def load_parameters(self, parameters_file):
         ''' 
@@ -137,11 +149,17 @@ class Preprocessing(object):
             self.band_pass_high = float(parameters.get('filtering', 'band_pass_high'))
             self.filter_type = str(parameters.get('filtering', 'filter_type'))
 
+            # resampling parameters
+            self.resample = eval(parameters.get('resampling', 'resample'))
+            self.resample_rate = float(parameters.get('resampling', 'resampling_rate'))
+
             # data cleaning parameters 
             self.wICA = eval(parameters.get('cleaning', 'wICA'))
             self.wICA_num_components = int(parameters.get('cleaning', 'wICA_num_components'))
             self.icalabel = eval(parameters.get('cleaning', 'icalabel'))
             self.iclabel_num_components = int(parameters.get('cleaning', 'iclabel_num_components'))
+            self.asr = eval(parameters.get('cleaning', 'asr'))
+            self.asr_cutoff = float(parameters.get('cleaning', 'asr_cutoff'))
             self.bad_segment_interpolation = eval(parameters.get('cleaning', 'bad_segment_interpolation'))
             self.segment_interpolation_method = parameters.get('cleaning', 'segment_interpolation_method')
         except Exception as e:
@@ -191,8 +209,8 @@ class Preprocessing(object):
             # If we are filtering each raw dataset separately, iterated over each filtering and appending,
             # otherwise append the unfiltered data into one file and then notch and HP filter the full concatenated data.
             if self.filter_raws_separately and self.filter_notch:
-                pipeline_log.info('  Notch at 60Hz.')
-                pipeline_log.info('  High pass at '+str(self.high_pass_cutoff)+'Hz.')
+                pipeline_log.info('  --> Notch at 60Hz.')
+                pipeline_log.info('  --> High pass at '+str(self.high_pass_cutoff)+'Hz.')
                 pipeline_log.info('')
                 if i==0:
                     data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs, filter_type=self.filter_type)
@@ -206,17 +224,22 @@ class Preprocessing(object):
                     data = mne.concatenate_raws([data,raw], verbose='warning')
         if not self.filter_raws_separately and self.filter_notch:
             pipeline_log.info('  Filtering concatenated data.')
-            pipeline_log.info('  -->Notch filtered at 60Hz.')
-            pipeline_log.info('  -->High pass filtered at'+str(self.high_pass_cutoff)+'Hz.')
+            pipeline_log.info('  --> Notch filtered at 60Hz.')
+            pipeline_log.info('  --> High pass filtered at'+str(self.high_pass_cutoff)+'Hz.')
             pipeline_log.info('')
             data = notch_and_hp(data)
 
-        # Finally if band_pass is set to True, we bandpass the data at the values specified in the parameters file.
+        # If band_pass is set to True, we bandpass the data at the values specified in the parameters file.
         if self.filter_band_pass:
             self.data = data.filter(l_freq=self.band_pass_low, h_freq=self.band_pass_high, method=self.filter_type, verbose='warning')
 
         # Save PSD of loaded and filtered data
-        save_psd(pjoin(self.results_path+'prefiltered.png'), self.data)
+        save_psd(pjoin(self.results_savepath,'prefiltered.png'), self.data)
+
+        # If resample is set to True, resample the data
+        if self.resample:
+            pipeline_log.info('  Resampled to '+str(self.resample_rate)+' samples per second.')
+            self.data.resample(self.resample_rate)
 
         # TODO: Add other data stats to logger
         pipeline_log.info('  Data shape: '+str(self.data._data.shape))
@@ -228,7 +251,7 @@ class Preprocessing(object):
         pipeline_log.info('')
         pipeline_log.info(co.color('green','Paths'))
         pipeline_log.info((co.color('white','  Configuration file: ')) + self.parameters_file)
-        pipeline_log.info((co.color('white','  Output Directory: ')) + self.results_path)
+        pipeline_log.info((co.color('white','  Output Directory: ')) + self.results_savepath)
         pipeline_log.info('')
 
         ## Run through pipline steps, printing successful stages and settings to console and log
@@ -240,6 +263,7 @@ class Preprocessing(object):
         # Re-reference data
         pipeline_log.info(co.color('periwinkle','Re-referencing data to average reference...'))
         self._reference()
+        pipeline_log.info('  Data referenced to average.')
         pipeline_log.info('')
 
         # TODO: Add downsampling option here
@@ -250,7 +274,16 @@ class Preprocessing(object):
             self._iclabel()
             pipeline_log.info((co.color('white','  Finished ICALabel.')))
         else: 
-            pipeline_log.info(co.color('periwinkle','Skipping ICALabel...'))
+            pass
+        pipeline_log.info('')
+
+        # Run ASR
+        if self.asr:
+            pipeline_log.info(co.color('periwinkle','Running artifact subspace reconstruction with cutoff '+str(self.asr_cutoff)+'.'))
+            self._artifact_subspace_reconstruction()
+            pipeline_log.info((co.color('white','  Finished ASR.')))
+        else:
+            pipeline_log.info(co.color('periwinkle','Not running artifact subspace reconstruction...'))
         pipeline_log.info('')
 
         # Run wavelet ICA
@@ -259,7 +292,7 @@ class Preprocessing(object):
             self._wICA()
             pipeline_log.info((co.color('white','  Finished wICA.')))
         else:
-            pipeline_log.info(co.color('periwinkle','  Skipping wICA...'))
+            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
         pipeline_log.info('')
 
         # Segment data into epochs, identify remaining bad segments, and interpolate
@@ -268,17 +301,20 @@ class Preprocessing(object):
             self._interpolate_bad_segments()
             pipeline_log.info((co.color('white','  Finished bad segment identification and interpolation.')))
         else:
-            pipeline_log.info((co.color('white','  Skipping bad segment identification and interpolation.')))
+            pipeline_log.info((co.color('periwinkle','Not running bad segment identification and interpolation.')))
         pipeline_log.info('')
 
     def _notch_and_hp(self):
         self.data = notch_and_hp(self.data)
 
         # Save the filtered data to raw MNE-Python file 
-        self.data.save(pjoin(self.results_path,'filtered.fif'), overwrite=True)
+        self.data.save(pjoin(self.results_savepath,'filtered.fif'), overwrite=True)
 
         # Plot filtered data artifacts
-        save_eog_plot(pjoin(self.results_path,'eog_filtered.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath,'eog_filtered.png'), self.data)
+
+    def find_bad_channels(self):
+        pass
 
     def _wICA(self):
         ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
@@ -289,19 +325,19 @@ class Preprocessing(object):
         self.data._data -= self.artifacts.T
 
         # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
-        save_sparkline_ica(pjoin(self.results_path,'ICA_timeseries_pre_wICA.png'), ICs) 
-        save_sparkline_ica(pjoin(self.results_path,'wICA_artifact_timeseries.png'), self.wICs) 
+        save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
+        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), self.wICs) 
 
         # Save the wavelet-ICA-cleaned raw MNE-Python file 
-        self.data.save(pjoin(self.results_path,'wICA_cleaned.fif'), overwrite=True)
+        self.data.save(pjoin(self.results_savepath,'wICA_cleaned.fif'), overwrite=True)
 
     def _iclabel(self):
         # Run ICALabel on the current data
         self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
-        save_ica_components(pjoin(self.results_path,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_list=self.ic_labels['labels'])
-        ic_save_path = pjoin(self.results_path,'ICALabel_ICA_topoplots/')
+        save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_list=self.ic_labels['labels'])
+        ic_save_path = pjoin(self.results_savepath,'ICALabel_ICA_topoplots/')
         if not os.path.exists(ic_save_path):
            os.makedirs(ic_save_path)
         for i,label in enumerate(self.ic_labels['labels']):
@@ -309,14 +345,14 @@ class Preprocessing(object):
             plt.close()
 
         # Generate artifact plots for cleaned data and data without cleaning
-        save_eog_plot(pjoin(self.results_path,'eog_icalabel_precleaning.png'), self.data)
-        save_eog_plot(pjoin(self.results_path,'eog_icalabel_cleaned.png'), self.ic_cleaned)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), self.ic_cleaned)
 
         # Replace pipeline data with new cleaned data
         self.data = self.ic_cleaned
 
         # Save the ICALabel-cleaned raw MNE-Python file 
-        self.ic_cleaned.save(pjoin(self.results_path,'icalabel_cleaned.fif'), overwrite=True)
+        self.ic_cleaned.save(pjoin(self.results_savepath,'icalabel_cleaned.fif'), overwrite=True)
 
     def _reference(self, reference_method='average'):
         self.data = self.data.set_eeg_reference(reference_method)
@@ -324,6 +360,21 @@ class Preprocessing(object):
     def _interpolate_bad_segments(self):
         self.data = interpolate_bad_segments(self.data, method=self.segment_interpolation_method)
         # Add bad segment plots
+
+    def _artifact_subspace_reconstruction(self):
+        # Run ASR
+        data_cleaned = artifact_subspace_reconstruction(self.data, cutoff=self.asr_cutoff)
+
+        # Generate artifact plots for cleaned data and data without cleaning
+        save_eog_plot(pjoin(self.results_savepath,'pre_ASR.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath,'post_ASR.png'), data_cleaned)
+
+        # Replace pipeline data with new cleaned data
+        self.data = data_cleaned
+
+        # Save the ASR-cleaned raw MNE-Python file 
+        self.data.save(pjoin(self.results_savepath,'ASR_cleaned.fif'), overwrite=True)
+
 
 #------------- Filtering functions -------------#
 def notch_and_hp(raw, notch_freqs, l_freq=1.0, h_freq=None, filter_type='fir'):
@@ -334,7 +385,7 @@ def notch_and_hp(raw, notch_freqs, l_freq=1.0, h_freq=None, filter_type='fir'):
 
 #------------- Wavelet ICA functions -------------#
 def ddencmp(x, wavelet='coif5', scale=1.0):
-    '''Python recreation of MATLABs ddencmp function for choosing wavelet thresholds'''
+    '''Python recreation of MATLABs ddencmp function for choosing wavelet threshold using Donoho method.'''
     n = len(x)
     (cA, cD)  = pywt.dwt(x,wavelet)
     noiselev = np.median(np.abs(cD))/0.6745
@@ -384,7 +435,7 @@ def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False,
     return wICs, artifacts
 
 #------------- ICA Label functions -------------#
-def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax', fit_params=dict(extended=True)):
+def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax', fit_params=dict(extended=True), reject=None):
     '''
     Uses the MNE-ICALabel method to classify independent components into six different estimated sources of 
     variability: brain, muscle artifact, eye blink, heart beat, line noise, channel noise, and other.
@@ -404,7 +455,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
     # Fit ICA to mne_raw
     print('  Fitting ICA with '+str(num_components)+' components.')
     ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
-    ica.fit(mne_raw)
+    ica.fit(mne_raw, reject=reject)
     
     # Use label_components function from ICLabel library to classify ICs
     print('  Using ICALabel to classify independent components.')
@@ -418,9 +469,12 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
     cleaned = ica.apply(reconst_raw, exclude=exclude_idx)
     return ic_labels, ica, cleaned
 
-def interpolate_bad_segments(raw, segment_length=1.0, method='autoreject'):
+def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
-    raise NotImplemented()
+    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=False)
+
+    # get global rejection threshold
+    reject = ar.get_rejection_threshold(epochs)
 
     # Use mne-compatible autoreject library to clean epoched data
     if method=='autoreject':
@@ -429,21 +483,21 @@ def interpolate_bad_segments(raw, segment_length=1.0, method='autoreject'):
         ar = Ransac()
     else:
         raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
-    epochs_clean = ar.fit_transform(epochs)  
+    self.epochs = ar.fit_transform(epochs)
 
-def artifact_subspace_reconstruction(raw):
+def artifact_subspace_reconstruction(raw, cutoff=20):
     '''
     Apply artifact subspace reconstrution method using a Python implementation of EEGLAB's clear_rawdata ASR method. 
     See: https://github.com/DiGyt/asrpy.  
     '''
     import asrpy
-    asr = asrpy.ASR(sfreq=raw.info["sfreq"], cutoff=20)
+    asr = asrpy.ASR(sfreq=raw.info["sfreq"], cutoff=cutoff)
     asr.fit(raw)   
     raw = asr.transform(raw)
     return raw
 
 #------------- Plotting functions -------------#
-def save_psd(save_file, mne_raw, xlim=[0,100]):
+def save_psd(save_file, mne_raw, xlim=[0,200]):
     '''
     Save a power spectral density plot of the time series in mne_raw to the specified absolute file path
     using MNE-Python's compute_psd function.
@@ -554,7 +608,7 @@ def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
     average_ecg.plot_joint(show=False)
     sns.despine()
     plt.savefig(save_file)
-        
+
 #-------------------------------------------------------------------------------                                     
 # Main                                                                                                               
 
