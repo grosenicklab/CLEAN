@@ -7,9 +7,7 @@
 # This is a command-line callable function to run the CLEAN preprocessing pipeline 
 # based on a config file with the desired preprocessing parameters.
 
-# Questions: 
-# (1) Is it always best in all stages to preprocess all the files together? Or should notch filtering and hp filtering be done per-dataset first as we do now? 
-# (2) How can we incorporate (or rewrite) the NoiseTools code (http://audition.ens.fr/adc/NoiseTools/) which has methods for nonstationary noise sources (as we might see across concatenated days).
+# Add citations for: MNE-Python, ICALabel, wICA, AutoReject, ASR, FASTER
 
 # Import major libraries
 import os, time, sys, re, glob
@@ -72,6 +70,9 @@ class Preprocessing(object):
        self.date = datetime.now().date().isoformat()
        self.load_parameters(parameters_file)
 
+       # Set bad channels container
+       self.bad_channels_list=['VREF']
+
        # Set up a logfile for this run.  We append the date to the 
        # logfile, so each run of the pipeline is unique.
        pipeline_log.setLevel(logging.DEBUG)
@@ -109,7 +110,7 @@ class Preprocessing(object):
         # Import and instantiate ConfigParser.   
         import configparser
         parameters = configparser.ConfigParser()
-        parameters.read(parameters_file)
+        parameters.read(parameters_file) 
         if len(parameters.sections()) == 0:
             print(len(parameters.sections()))
             print('Could not load parameters from ', parameters_file)
@@ -118,35 +119,37 @@ class Preprocessing(object):
             # path parameters
             self.input_path = parameters.get('paths', 'input_path')
             self.results_path = parameters.get('paths', 'results_path')
+
             # data type parameters
-            self.data_from_pre = parameters.get('data_from', 'pre')
-            self.data_from_post = parameters.get('data_from', 'post')
-            self.data_from_resting_state = parameters.get('data_from', 'resting_state')
-            self.data_from_TMS = parameters.get('data_from', 'TMS')
-            self.data_from_motor = parameters.get('data_from', 'motor')
+            self.data_from_pre = eval(parameters.get('data_from', 'pre'))
+            self.data_from_post = eval(parameters.get('data_from', 'post'))
+            self.data_from_resting_state = eval(parameters.get('data_from', 'resting_state'))
+            self.data_from_TMS = eval(parameters.get('data_from', 'TMS'))
+            self.data_from_motor = eval(parameters.get('data_from', 'motor'))
 
             # filtering parameters
-            self.filter_raws_separately = parameters.get('filtering', 'filter_raws_separately')
-            self.filter_notch = parameters.get('filtering', 'notch')
+            self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
+            self.filter_notch = eval(parameters.get('filtering', 'notch'))
             self.notch_freqs = np.array(parameters.get('filtering', 'notch_freqs').strip('][').split(',')).astype(float)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
-            self.filter_band_pass = parameters.get('filtering', 'band_pass')
+            self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
             self.band_pass_low = float(parameters.get('filtering', 'band_pass_low'))
             self.band_pass_high = float(parameters.get('filtering', 'band_pass_high'))
             self.filter_type = str(parameters.get('filtering', 'filter_type'))
 
             # data cleaning parameters 
-            self.wICA = parameters.get('cleaning', 'wICA')
+            self.wICA = eval(parameters.get('cleaning', 'wICA'))
             self.wICA_num_components = int(parameters.get('cleaning', 'wICA_num_components'))
-            self.icalabel = parameters.get('cleaning', 'icalabel')
-            self.bad_segment_interpolation = parameters.get('cleaning', 'bad_segment_interpolation')
+            self.icalabel = eval(parameters.get('cleaning', 'icalabel'))
+            self.iclabel_num_components = int(parameters.get('cleaning', 'iclabel_num_components'))
+            self.bad_segment_interpolation = eval(parameters.get('cleaning', 'bad_segment_interpolation'))
             self.segment_interpolation_method = parameters.get('cleaning', 'segment_interpolation_method')
         except Exception as e:
             print('Failure loading parameters with error:',e)       
             pipeline_log.info("  An error occured when loding parameters: " +str(e))
             sys.exit(1)
 
-        # Plot parameters
+        # Plot parameters -- UNDER CONSTRUCTION
         plt.style.use("ggplot")
         np.seterr(invalid='ignore')
         sns.set_style("white")
@@ -155,9 +158,12 @@ class Preprocessing(object):
         plt.rcParams['axes.linewidth'] = 0.5
         plt.rcParams['figure.dpi'] = 100
 
+        # MNE output verbose-ness
+        mne.set_log_level(parameters.get('logging', 'mne_log_level'))  
+
         self.parameters_file = parameters_file
 
-    def load_data(self, bad_channels_list=['VREF']):
+    def load_data(self):
         '''
         Data loading fuction: TODO: add MNE loading and docstring.
         '''
@@ -177,16 +183,16 @@ class Preprocessing(object):
         # Iterate over filenames in list
         for i,f in enumerate(filenames):
             data_raw_file = os.path.join(self.input_path, f)
-            raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning')
-            raw.info["bads"] = bad_channels_list
+            raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning') # MNE 1.4.2
+            raw.info["bads"] = self.bad_channels_list
             pipeline_log.info('')
-            pipeline_log.info('\tLoaded: '+f)
+            pipeline_log.info('  Loaded: '+f)
 
             # If we are filtering each raw dataset separately, iterated over each filtering and appending,
             # otherwise append the unfiltered data into one file and then notch and HP filter the full concatenated data.
             if self.filter_raws_separately and self.filter_notch:
-                pipeline_log.info('\t--> Notch at 60Hz.')
-                pipeline_log.info('\t--> High pass at '+str(self.high_pass_cutoff)+'Hz.')
+                pipeline_log.info('  Notch at 60Hz.')
+                pipeline_log.info('  High pass at '+str(self.high_pass_cutoff)+'Hz.')
                 pipeline_log.info('')
                 if i==0:
                     data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs, filter_type=self.filter_type)
@@ -199,9 +205,9 @@ class Preprocessing(object):
                 else:
                     data = mne.concatenate_raws([data,raw], verbose='warning')
         if not self.filter_raws_separately and self.filter_notch:
-            pipeline_log.info('\t--> Filtering concatenated data.')
-            pipeline_log.info('\t--> Notch at 60Hz.')
-            pipeline_log.info('\t--> High pass at'+str(self.high_pass_cutoff)+'Hz.')
+            pipeline_log.info('  Filtering concatenated data.')
+            pipeline_log.info('  -->Notch filtered at 60Hz.')
+            pipeline_log.info('  -->High pass filtered at'+str(self.high_pass_cutoff)+'Hz.')
             pipeline_log.info('')
             data = notch_and_hp(data)
 
@@ -209,14 +215,16 @@ class Preprocessing(object):
         if self.filter_band_pass:
             self.data = data.filter(l_freq=self.band_pass_low, h_freq=self.band_pass_high, method=self.filter_type, verbose='warning')
 
-        # XXX TODO Add other data stats to logger
-        pipeline_log.info('\tData shape: '+str(self.data._data.shape))
-        pipeline_log.info('')
+        # Save PSD of loaded and filtered data
+        save_psd(pjoin(self.results_path+'prefiltered.png'), self.data)
+
+        # TODO: Add other data stats to logger
+        pipeline_log.info('  Data shape: '+str(self.data._data.shape))
         
     def run(self):
         # Clear screen and print basic data paths and parameter file location
         co.clear_screen()
-        pipeline_log.info((co.color('purple', co.bold_text('CLEAN Preprocessing Pipeline.'))))
+        pipeline_log.info((co.color('purple', co.bold_text('CLEAN preprocessing pipeline.'))))
         pipeline_log.info('')
         pipeline_log.info(co.color('green','Paths'))
         pipeline_log.info((co.color('white','  Configuration file: ')) + self.parameters_file)
@@ -234,9 +242,11 @@ class Preprocessing(object):
         self._reference()
         pipeline_log.info('')
 
+        # TODO: Add downsampling option here
+
         # Run ICALabel to detect bad ICs
         if self.icalabel:
-            pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning...'))
+            pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning (this may take some time)...'))
             self._iclabel()
             pipeline_log.info((co.color('white','  Finished ICALabel.')))
         else: 
@@ -245,14 +255,14 @@ class Preprocessing(object):
 
         # Run wavelet ICA
         if self.wICA:
-            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components. (this may take some time)...'))
+            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
             self._wICA()
             pipeline_log.info((co.color('white','  Finished wICA.')))
         else:
-            pipeline_log.info(co.color('periwinkle','Skipping wICA...'))
+            pipeline_log.info(co.color('periwinkle','  kipping wICA...'))
         pipeline_log.info('')
 
-        # Segment data into epochs, identify remaining bad segments, and intepolate
+        # Segment data into epochs, identify remaining bad segments, and interpolate
         if self.bad_segment_interpolation:
             pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
             self._interpolate_bad_segments()
@@ -261,33 +271,59 @@ class Preprocessing(object):
             pipeline_log.info((co.color('white','  Skipping bad segment identification and interpolation.')))
         pipeline_log.info('')
 
-        # Generate summary statistics and plots for model assessment 
-        pipeline_log.info(co.color('periwinkle','Generating summary plots... '))
-        self._plot_results()
-        pipeline_log.info('')
-
     def _notch_and_hp(self):
         self.data = notch_and_hp(self.data)
-        self.data_filtered = self.data.copy() # minimally filtered data for plotting
+
+        # Save the filtered data to raw MNE-Python file 
+        self.data.save(pjoin(self.results_path,'filtered.fif'), overwrite=True)
+
+        # Plot filtered data artifacts
+        save_eog_plot(pjoin(self.results_path,'eog_filtered.png'), self.data)
 
     def _wICA(self):
         ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
         ica.fit(self.data.get_data().T)  
         ICs = ica.fit_transform(self.data.get_data().T)
+
         self.wICs, self.artifacts = wICA(ica, ICs)
         self.data._data -= self.artifacts.T
 
+        # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
+        save_sparkline_ica(pjoin(self.results_path,'ICA_timeseries_pre_wICA.png'), ICs) 
+        save_sparkline_ica(pjoin(self.results_path,'wICA_artifact_timeseries.png'), self.wICs) 
+
+        # Save the wavelet-ICA-cleaned raw MNE-Python file 
+        self.data.save(pjoin(self.results_path,'wICA_cleaned.fif'), overwrite=True)
+
     def _iclabel(self):
-        self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, n_components=self.iclabel_num_components)
+        # Run ICALabel on the current data
+        self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
+
+        # Save ICA topoplots and a folder of individual IC statistic plots
+        save_ica_components(pjoin(self.results_path,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_list=self.ic_labels['labels'])
+        ic_save_path = pjoin(self.results_path,'ICALabel_ICA_topoplots/')
+        if not os.path.exists(ic_save_path):
+           os.makedirs(ic_save_path)
+        for i,label in enumerate(self.ic_labels['labels']):
+            save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), self.ic_ica, self.data, component_number=i, ic_label=self.ic_labels['labels'][i])
+            plt.close()
+
+        # Generate artifact plots for cleaned data and data without cleaning
+        save_eog_plot(pjoin(self.results_path,'eog_icalabel_precleaning.png'), self.data)
+        save_eog_plot(pjoin(self.results_path,'eog_icalabel_cleaned.png'), self.ic_cleaned)
+
+        # Replace pipeline data with new cleaned data
+        self.data = self.ic_cleaned
+
+        # Save the ICALabel-cleaned raw MNE-Python file 
+        self.ic_cleaned.save(pjoin(self.results_path,'icalabel_cleaned.fif'), overwrite=True)
 
     def _reference(self, reference_method='average'):
         self.data = self.data.set_eeg_reference(reference_method)
 
     def _interpolate_bad_segments(self):
         self.data = interpolate_bad_segments(self.data, method=self.segment_interpolation_method)
-
-    def _plot_results(self):
-        pass
+        # Add bad segment plots
 
 #------------- Filtering functions -------------#
 def notch_and_hp(raw, notch_freqs, l_freq=1.0, h_freq=None, filter_type='fir'):
@@ -306,7 +342,7 @@ def ddencmp(x, wavelet='coif5', scale=1.0):
     return thresh
 
 def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False, 
-         trim_approx=False, thresholding='soft', verbose=False):
+         trim_approx=False, thresholding='soft', verbose=True):
     '''
     Wavelet ICA thresholding. 
     Args:
@@ -333,6 +369,7 @@ def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False,
 
     # Iterate over independent components, thresholding each one using a stationary wavelet transform
     # with soft thresholding. 
+    print('  Fitting ICA for wavelet-ICA cleaning...')
     wICs = []
     for i in range(ICs.shape[1]):
         if verbose:
@@ -362,25 +399,28 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
     Returns:
         ic_labels: a set of labels for the ICs estimated.
         ica: a fit MNE ICA object.
-        cleaned: a new data file with 
+        cleaned: a new data file with the all but the data categories in 'keep' removed.
     '''
     # Fit ICA to mne_raw
+    print('  Fitting ICA with '+str(num_components)+' components.')
     ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
     ica.fit(mne_raw)
     
     # Use label_components function from ICLabel library to classify ICs
+    print('  Using ICALabel to classify independent components.')
     ic_labels = label_components(mne_raw, ica, method="iclabel")
     labels = ic_labels["labels"]
     
     # Exclude ICs not in 'keep' list and reconstruct cleaned data
     exclude_idx = [idx for idx, label in enumerate(labels) if label not in keep]
-    print(f"Excluding these ICA components: {exclude_idx}")
+    print(f"  Excluding these ICA components: {exclude_idx}")
     reconst_raw = mne_raw.copy()
     cleaned = ica.apply(reconst_raw, exclude=exclude_idx)
     return ic_labels, ica, cleaned
 
 def interpolate_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
+    raise NotImplemented()
 
     # Use mne-compatible autoreject library to clean epoched data
     if method=='autoreject':
@@ -402,9 +442,118 @@ def artifact_subspace_reconstruction(raw):
     raw = asr.transform(raw)
     return raw
 
-def plot_summary_stats():
-    pass
+#------------- Plotting functions -------------#
+def save_psd(save_file, mne_raw, xlim=[0,100]):
+    '''
+    Save a power spectral density plot of the time series in mne_raw to the specified absolute file path
+    using MNE-Python's compute_psd function.
 
+    '''
+    fig = mne_raw.compute_psd().plot(show=False)
+    axs = fig.get_axes()
+    axs[0].set_xlim(xlim)
+    sns.despine()
+    plt.savefig(save_file)
+
+def eeg_sparkline(timeseries,x=None,colors=None,normalize=True,color='black', alpha=0.5,
+                     lwd=1.0,scale_factor=1.0, spacing = 1.3, figsize=(15,10), ax=None):
+    '''                                                                                                                  
+    Plot a simple sparkline plot of EEG time series in the rows of the provided matrix. 
+    Input Args:
+        timeseries: numpy array with shape (n_channels, n_timepoints).
+        x: optional labels for the x-axis, must be of same length as n_timepoints.
+        colors: optional vector of colors for sparkline traces.
+        normalize: boolean, if true use mean or max normalization.
+        color: default color for all sparkline traces.
+        alpha: alpha value for all sparkline traces.
+        lwd: linewidth for all sparkline traces.
+        scale_factor: scaling factor for sparkline trace amplitudes (if normalized).
+        spacing: allows control over space between sparkline traces.
+        figsize: passed to matplotlib to control figure size.
+        ax: optional matplotlib axes object for overplotting.
+    Returns:
+        ax: matplotlib axes object.
+                                                                                                                         
+    '''
+    if ax is None:
+        f = plt.figure(figsize=figsize)
+        ax = f.add_subplot(111)
+    timeseries = np.flipud(timeseries)
+    if x is None:
+        x = np.array(range(timeseries.shape[1]))
+    for c in range(timeseries.shape[0]):
+        ts = timeseries[c, :]
+        if normalize == True or normalize == 'mean':
+            ts = (ts - ts.mean()) / np.abs(ts.mean())*scale_factor
+        if normalize == 'max':
+            ts = (ts - ts.mean()) / np.abs(ts).max()*scale_factor
+        if colors is not None:
+            ax.plot(x, ts + c*spacing, linewidth = lwd, color = colors[c], alpha=alpha)
+        else:
+            ax.plot(x, ts + c*spacing, linewidth = lwd, color = color, alpha=alpha) #'#0000ff')                 
+        plt.xlim([0,np.max(x)])
+        ax.spines[['left','right', 'top']].set_visible(False)
+        ax.axes.get_yaxis().set_visible(False)
+    return ax
+
+def save_sparkline_ica(save_file, ica_timeseries):
+    '''
+    Save a sparkline plots of independent component timeseries (n_timepoints, n_ICs) to the specified absolute file path
+    using function 'eeg_sparkline'.
+
+    '''
+    num_components = ica_timeseries.shape[1]
+    ax = eeg_sparkline(ica_timeseries.T, scale_factor=1, normalize='max', alpha=0.7, figsize=(25, num_components))
+    plt.xlabel('Time (samples)')
+    plt.savefig(save_file)
+
+def save_ica_components(save_file, ica, ic_label_list=None):
+    '''
+    Save a set of independent component plots using MNE-Python's plot_components method for ICA objects.
+    Args:
+        save_file: absolute path to save PNG output file.
+        ica: an MNE-Python ica object.
+        ic_label_list: optional list of conformal labels from ica_label to add to plot topomap titles.
+    
+    '''
+    fig = ica.plot_components(show=False)
+    if ic_label_list is not None:
+        axs = fig.get_axes()
+        assert len(axs)==len(ic_label_list)
+        for i,ax in enumerate(axs):
+            current_title = ax.get_title()
+            ax.set_title(current_title+':\n '+ic_label_list[i])
+    plt.savefig(save_file)
+
+def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label=None):
+    '''
+    Save a summary independent component plot using MNE-Python's plot_properties method for ICA objects.
+    Args:
+        save_file: absolute path to save PNG output file.
+        ica: an MNE-Python ica object.
+        mne_raw: an MNE-Python raw object.
+        component_number: the independent component index to plot. 
+        ic_label: optional label from ica_label to add to plot topomap title.
+    
+    '''
+    fig = ica.plot_properties(mne_raw, picks=[component_number], verbose=False, show=False)
+    if ic_label is not None: 
+        axs = fig[0].get_axes()
+        current_title = axs[0].get_title()
+        axs[0].set_title(current_title+': '+ic_label)
+    plt.savefig(save_file)
+
+def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
+    '''
+    Save an eog artifact plot for the time series in mne_raw to the specified absolute file path.
+    Uses MNE-Python's create_eog_epochs and plot_joint functions and defaults to channels 
+    ['E32','E241','E25','E238'] which correspond to EGI's 256 channel hydrocel net eye motion channels.
+
+    '''
+    average_ecg = mne.preprocessing.create_eog_epochs(mne_raw,ch_name=channel_list).average()
+    average_ecg.plot_joint(show=False)
+    sns.despine()
+    plt.savefig(save_file)
         
 #-------------------------------------------------------------------------------                                     
 # Main                                                                                                               
