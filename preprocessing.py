@@ -267,6 +267,7 @@ class Preprocessing(object):
         pipeline_log.info('')
 
         # TODO: Add downsampling option here
+        self._find_bad_channels()
 
         # Run ICALabel to detect bad ICs
         if self.icalabel:
@@ -313,8 +314,29 @@ class Preprocessing(object):
         # Plot filtered data artifacts
         save_eog_plot(pjoin(self.results_savepath,'eog_filtered.png'), self.data)
 
-    def find_bad_channels(self):
-        pass
+    def _find_bad_channels(self):
+        from pyprep.find_noisy_channels import NoisyChannels
+        # Estimate bad channels
+        sfreq = self.resample_rate
+        nc = NoisyChannels(self.data, random_state=1337)
+        nc.find_all_bads(channel_wise=True)
+        self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_correlation + nc.bad_by_dropout + nc.bad_by_ransac
+        print('Bad channels:', self.bad_channels)
+
+        # Interpolate bad channels
+        for bad in self.bad_channels:
+            self.data.info["bads"].append(bad)
+        self.data.interpolate_bads(reset_bads=False)
+        print("Data shape post interpolation:", self.data._data.shape)
+
+        # Adjust number of independent components
+        adj_num = self.data._data.shape[0] - len(self.bad_channels)
+        if self.wICA_num_components > adj_num:
+            pipeline_log.info((co.color('white','  Adjusted number of wICA components to '+str(adj_num)+'.')))
+            self.wICA_num_components = adj_num
+        if self.iclabel_num_components > adj_num:
+            pipeline_log.info((co.color('white','  Adjusted number of ICALabel components to '+str(adj_num)+'.')))
+            self.iclabel_num_components = adj_num
 
     def _wICA(self):
         ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
@@ -570,14 +592,19 @@ def save_ica_components(save_file, ica, ic_label_list=None):
         ic_label_list: optional list of conformal labels from ica_label to add to plot topomap titles.
     
     '''
-    fig = ica.plot_components(show=False)
-    if ic_label_list is not None:
-        axs = fig.get_axes()
-        assert len(axs)==len(ic_label_list)
-        for i,ax in enumerate(axs):
-            current_title = ax.get_title()
-            ax.set_title(current_title+':\n '+ic_label_list[i])
-    plt.savefig(save_file)
+    num_components = ica.n_components
+    for i in range(int(num_components/20)+1):
+        if (i+1)*20 < num_components:
+            fig = ica.plot_components(picks=list(range(i*20,(i+1)*20)), show=False)
+        else:
+            fig = ica.plot_components(picks=list(range(i*20,num_components)), show=False)
+        if ic_label_list is not None:
+            ic_label_list_part = ic_label_list[(i*20):((i+1)*20)]
+            axs = fig.get_axes()
+            for j,ax in enumerate(axs):
+                current_title = ax.get_title()
+                ax.set_title(current_title+':\n '+ic_label_list_part[j])
+        plt.savefig(save_file.split('.')[0]+'_'+str(i).zfill(2)+save_file.split('.')[1])
 
 def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label=None):
     '''
