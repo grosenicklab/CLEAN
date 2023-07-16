@@ -11,8 +11,11 @@
 
 # Import major libraries
 import os, time, sys, re, glob
+import shutil
 from datetime import datetime
 import subprocess
+import configparser
+
 import numpy as np
 import h5py
 import multiprocessing
@@ -22,6 +25,7 @@ from sklearn.decomposition import FastICA
 import scipy
 import pywt
 import seaborn as sns
+from pyprep.find_noisy_channels import NoisyChannels
 
 # Import MNE Python functions
 import mne
@@ -88,10 +92,9 @@ class Preprocessing(object):
         # Set up a logfile for this run.  We append the date to the 
         # logfile, so each run of the pipeline is unique.
         pipeline_log.setLevel(logging.DEBUG)
-        from time import localtime, strftime
         self.log_path = pjoin(self.results_savepath, 'logs')
         if not os.path.exists(self.log_path): os.makedirs(self.log_path)
-        self.local_logfile = pjoin(self.log_path, strftime("%Y-%b-%d-%H:%M:%S_log.txt", localtime()))
+        self.local_logfile = pjoin(self.log_path, time.strftime("%Y-%b-%d-%H:%M:%S_log.txt", time.localtime()))
         fh = logging.FileHandler(self.local_logfile)
         fh.setLevel(logging.DEBUG)
         format = '%(asctime)s - %(levelname)s - %(message)s'
@@ -107,9 +110,8 @@ class Preprocessing(object):
         pipeline_log.addHandler(ch)
        
         # Make a copy of the parameters file used for this run
-        import shutil
         param_path = pjoin(self.results_savepath, 'parameters')
-        paramcopy_file = pjoin(param_path, strftime("%Y-%b-%d-%H:%M:%S-params.cfg", localtime()))
+        paramcopy_file = pjoin(param_path, time.strftime("%Y-%b-%d-%H:%M:%S-params.cfg", time.localtime()))
         if not os.path.exists(param_path): os.makedirs(param_path)
         shutil.copyfile(parameters_file, paramcopy_file)
                      
@@ -120,7 +122,6 @@ class Preprocessing(object):
         otherwise an exception is returned.
         '''
         # Import and instantiate ConfigParser.   
-        import configparser
         parameters = configparser.ConfigParser()
         parameters.read(parameters_file) 
         if len(parameters.sections()) == 0:
@@ -266,8 +267,14 @@ class Preprocessing(object):
         pipeline_log.info('  Data referenced to average.')
         pipeline_log.info('')
 
-        # TODO: Add downsampling option here
-        self._find_bad_channels()
+        # Finding bad channels using 
+        if self.icalabel:
+            pipeline_log.info(co.color('periwinkle','Using NoisyChannels library to identify bad channels...'))
+            self._find_bad_channels()
+            pipeline_log.info((co.color('white','  Done.')))
+        else: 
+            pass
+        pipeline_log.info('')
 
         # Run ICALabel to detect bad ICs
         if self.icalabel:
@@ -315,18 +322,27 @@ class Preprocessing(object):
         save_eog_plot(pjoin(self.results_savepath,'eog_filtered.png'), self.data)
 
     def _find_bad_channels(self):
-        from pyprep.find_noisy_channels import NoisyChannels
         # Estimate bad channels
         sfreq = self.resample_rate
-        nc = NoisyChannels(self.data, random_state=1337)
+        nc = NoisyChannels(self.data, random_state=42)
         nc.find_all_bads(channel_wise=True)
+        self.noisychannel_obj = nc
         self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_correlation + nc.bad_by_dropout + nc.bad_by_ransac
-        print('Bad channels:', self.bad_channels)
+
+        # Print and log bad channel info
+        pipeline_log.info((co.color('white','  Removed '+str(len(self.bad_channels))+' total:')))
+        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_deviation))+' channels found to be bad by deviation.')))
+        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_hf_noise))+' channels found to be bad by high frequency noise.')))
+        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_correlation))+' channels found to be bad by correlations.')))
+        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_dropout))+' channels found to be bad by dropout.')))
+        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_ransac))+' channels found to be bad by RANSAC.')))
 
         # Interpolate bad channels
-        for bad in self.bad_channels:
-            self.data.info["bads"].append(bad)
-        self.data.interpolate_bads(reset_bads=False)
+        #for bad in self.bad_channels:
+        #    self.data.info["bads"].append(bad)
+        self.data.info['bads'].extend(self.bad_channels)
+        self.data.interpolate_bads(reset_bads=True) # This will clear out data.info['bads']
+        self.data.info['bads'] = self.bad_channels_list # Reset data.info['bads'] to always bad channels
         print("Data shape post interpolation:", self.data._data.shape)
 
         # Adjust number of independent components
@@ -353,17 +369,20 @@ class Preprocessing(object):
         # Save the wavelet-ICA-cleaned raw MNE-Python file 
         self.data.save(pjoin(self.results_savepath,'wICA_cleaned.fif'), overwrite=True)
 
+        # Generate artifact plots for wICA cleaned data g
+        save_eog_plot(pjoin(self.results_savepath,'eog_wICA_cleaned.png'), self.data)
+
     def _iclabel(self):
         # Run ICALabel on the current data
         self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
-        save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_list=self.ic_labels['labels'])
+        save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_obj=self.ic_labels)
         ic_save_path = pjoin(self.results_savepath,'ICALabel_ICA_topoplots/')
         if not os.path.exists(ic_save_path):
            os.makedirs(ic_save_path)
         for i,label in enumerate(self.ic_labels['labels']):
-            save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), self.ic_ica, self.data, component_number=i, ic_label=self.ic_labels['labels'][i])
+            save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), self.ic_ica, self.data, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
 
         # Generate artifact plots for cleaned data and data without cleaning
@@ -414,7 +433,7 @@ def ddencmp(x, wavelet='coif5', scale=1.0):
     thresh = np.sqrt(2*np.log(len(x)))*noiselev*scale
     return thresh
 
-def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False, 
+def wICA(ica, ICs, levels=5, wavelet='coif5', normalize=False, 
          trim_approx=False, thresholding='soft', verbose=True):
     '''
     Wavelet ICA thresholding. 
@@ -436,8 +455,8 @@ def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False,
     if modulus !=0:
         extra = np.zeros((2**levels)-modulus)
     if verbose:
-        print('Data padded with ', str(len(extra)), ' additional values.')
-        print('Wavelet thresholding with wavelet:', wavelet)
+        print('  Data padded with ', str(len(extra)), ' additional values.')
+        print('  Wavelet thresholding with wavelet:', wavelet)
     wavelet = pywt.Wavelet(wavelet)
 
     # Iterate over independent components, thresholding each one using a stationary wavelet transform
@@ -446,7 +465,7 @@ def wICA(ica, ICs, levels=7, wavelet='coif5', normalize=False,
     wICs = []
     for i in range(ICs.shape[1]):
         if verbose:
-            print("Thresholding IC#",i)
+            print("  Thresholding IC#",i)
         sig = np.concatenate((ICs[:,i],extra))
         thresh = ddencmp(sig, wavelet)
         swc = pywt.swt(sig, wavelet, level=levels, start_level=0, trim_approx=trim_approx, norm=normalize)
@@ -479,7 +498,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
     ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
     ica.fit(mne_raw, reject=reject)
     
-    # Use label_components function from ICLabel library to classify ICs
+    # Use label_components function from ICLabel library to classify ICs and get their estimated probabilities
     print('  Using ICALabel to classify independent components.')
     ic_labels = label_components(mne_raw, ica, method="iclabel")
     labels = ic_labels["labels"]
@@ -488,7 +507,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
     exclude_idx = [idx for idx, label in enumerate(labels) if label not in keep]
     print(f"  Excluding these ICA components: {exclude_idx}")
     reconst_raw = mne_raw.copy()
-    cleaned = ica.apply(reconst_raw, exclude=exclude_idx)
+    cleaned = ica.apply(reconst_raw, exclude=exclude_idx, verbose=False)
     return ic_labels, ica, cleaned
 
 def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
@@ -507,16 +526,16 @@ def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
         raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
     self.epochs = ar.fit_transform(epochs)
 
-def artifact_subspace_reconstruction(raw, cutoff=20):
-    '''
-    Apply artifact subspace reconstrution method using a Python implementation of EEGLAB's clear_rawdata ASR method. 
-    See: https://github.com/DiGyt/asrpy.  
-    '''
-    import asrpy
-    asr = asrpy.ASR(sfreq=raw.info["sfreq"], cutoff=cutoff)
-    asr.fit(raw)   
-    raw = asr.transform(raw)
-    return raw
+#def artifact_subspace_reconstruction(raw, cutoff=20):
+#    '''
+#    Apply artifact subspace reconstrution method using a Python implementation of EEGLAB's clear_rawdata ASR method. 
+#    See: https://github.com/DiGyt/asrpy.  
+#    '''
+#    import asrpy
+#    asr = asrpy.ASR(sfreq=raw.info["sfreq"], cutoff=cutoff)
+#    asr.fit(raw)   
+#    raw = asr.transform(raw)
+#    return raw
 
 #------------- Plotting functions -------------#
 def save_psd(save_file, mne_raw, xlim=[0,200]):
@@ -583,7 +602,7 @@ def save_sparkline_ica(save_file, ica_timeseries):
     plt.xlabel('Time (samples)')
     plt.savefig(save_file)
 
-def save_ica_components(save_file, ica, ic_label_list=None):
+def save_ica_components(save_file, ica, ic_label_obj=None):
     '''
     Save a set of independent component plots using MNE-Python's plot_components method for ICA objects.
     Args:
@@ -593,20 +612,25 @@ def save_ica_components(save_file, ica, ic_label_list=None):
     
     '''
     num_components = ica.n_components
+    if ic_label_obj is not None:
+        ic_label_list = ic_label_obj['labels']
+        ic_label_probs = np.round(100*ic_label_obj['y_pred_proba'])
+    # Iterate over batches of 20 ICs, making a plot for each group and adding labels and label probabilities from ICALabel
     for i in range(int(num_components/20)+1):
         if (i+1)*20 < num_components:
             fig = ica.plot_components(picks=list(range(i*20,(i+1)*20)), show=False)
         else:
             fig = ica.plot_components(picks=list(range(i*20,num_components)), show=False)
-        if ic_label_list is not None:
+        if ic_label_obj is not None:
             ic_label_list_part = ic_label_list[(i*20):((i+1)*20)]
+            ic_probs_list_part = ic_label_probs[(i*20):((i+1)*20)]
             axs = fig.get_axes()
             for j,ax in enumerate(axs):
                 current_title = ax.get_title()
-                ax.set_title(current_title+':\n '+ic_label_list_part[j])
+                ax.set_title(current_title+':\n '+ic_label_list_part[j]+' ('+str(ic_probs_list_part[j])+'%)')
         plt.savefig(save_file.split('.')[0]+'_'+str(i).zfill(2)+save_file.split('.')[1])
 
-def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label=None):
+def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_obj=None):
     '''
     Save a summary independent component plot using MNE-Python's plot_properties method for ICA objects.
     Args:
@@ -618,10 +642,12 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label=No
     
     '''
     fig = ica.plot_properties(mne_raw, picks=[component_number], verbose=False, show=False)
-    if ic_label is not None: 
+    if ic_label_obj is not None: 
+        ic_label = ic_label_obj['labels'][component_number]
+        ic_prob = ic_label_obj['y_pred_proba'][component_number]
         axs = fig[0].get_axes()
         current_title = axs[0].get_title()
-        axs[0].set_title(current_title+': '+ic_label)
+        axs[0].set_title(current_title+': '+ic_label+' ('+str(ic_prob)+'%)')
     plt.savefig(save_file)
 
 def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
