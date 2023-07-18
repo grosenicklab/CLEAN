@@ -267,6 +267,15 @@ class Preprocessing(object):
         pipeline_log.info('  Data referenced to average.')
         pipeline_log.info('')
 
+        # Run wavelet ICA
+        if self.wICA:
+            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+            self._wICA()
+            pipeline_log.info((co.color('white','  Finished wICA.')))
+        else:
+            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
+        pipeline_log.info('')
+
         # Finding bad channels using 
         if self.icalabel:
             pipeline_log.info(co.color('periwinkle','Using NoisyChannels library to identify bad channels...'))
@@ -294,15 +303,6 @@ class Preprocessing(object):
             pipeline_log.info(co.color('periwinkle','Not running artifact subspace reconstruction...'))
         pipeline_log.info('')
 
-        # Run wavelet ICA
-        if self.wICA:
-            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
-            self._wICA()
-            pipeline_log.info((co.color('white','  Finished wICA.')))
-        else:
-            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
-        pipeline_log.info('')
-
         # Segment data into epochs, identify remaining bad segments, and interpolate
         if self.bad_segment_interpolation:
             pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
@@ -326,7 +326,7 @@ class Preprocessing(object):
         sfreq = self.resample_rate
         nc = NoisyChannels(self.data, random_state=42)
         nc.find_all_bads(channel_wise=True)
-        self.noisychannel_obj = nc
+        #self.noisychannel_obj = nc
         self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_correlation + nc.bad_by_dropout + nc.bad_by_ransac
 
         # Print and log bad channel info
@@ -359,12 +359,12 @@ class Preprocessing(object):
         ica.fit(self.data.get_data().T)  
         ICs = ica.fit_transform(self.data.get_data().T)
 
-        self.wICs, self.artifacts = wICA(ica, ICs)
-        self.data._data -= self.artifacts.T
+        wICs, artifacts = wICA(ica, ICs)
+        self.data._data -= artifacts.T
 
         # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
         save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
-        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), self.wICs) 
+        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs) 
 
         # Save the wavelet-ICA-cleaned raw MNE-Python file 
         self.data.save(pjoin(self.results_savepath,'wICA_cleaned.fif'), overwrite=True)
@@ -374,33 +374,38 @@ class Preprocessing(object):
 
     def _iclabel(self):
         # Run ICALabel on the current data
-        self.ic_labels, self.ic_ica, self.ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
+        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
-        save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), self.ic_ica, ic_label_obj=self.ic_labels)
+        save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), ic_ica, ic_label_obj=self.ic_labels)
         ic_save_path = pjoin(self.results_savepath,'ICALabel_ICA_topoplots/')
         if not os.path.exists(ic_save_path):
            os.makedirs(ic_save_path)
         for i,label in enumerate(self.ic_labels['labels']):
-            save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), self.ic_ica, self.data, component_number=i, ic_label_obj=self.ic_labels)
+            save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), ic_ica, self.data, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
 
         # Generate artifact plots for cleaned data and data without cleaning
         save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
-        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), self.ic_cleaned)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned)
 
         # Replace pipeline data with new cleaned data
-        self.data = self.ic_cleaned
+        self.data = ic_cleaned
 
         # Save the ICALabel-cleaned raw MNE-Python file 
-        self.ic_cleaned.save(pjoin(self.results_savepath,'icalabel_cleaned.fif'), overwrite=True)
+        ic_cleaned.save(pjoin(self.results_savepath,'icalabel_cleaned.fif'), overwrite=True)
+
+        # Clean up
+        del ic_cleaned, ic_ica
 
     def _reference(self, reference_method='average'):
         self.data = self.data.set_eeg_reference(reference_method)
 
     def _interpolate_bad_segments(self):
-        self.data = interpolate_bad_segments(self.data, method=self.segment_interpolation_method)
-        # Add bad segment plots
+        self.epochs = autoreject_bad_segments(self.data, method=self.segment_interpolation_method)
+
+        # Generate artifact plots for cleaned data and data without cleaning
+        #save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_cleaned.png'), self.epochs)
 
     def _artifact_subspace_reconstruction(self):
         # Run ASR
@@ -425,8 +430,13 @@ def notch_and_hp(raw, notch_freqs, l_freq=1.0, h_freq=None, filter_type='fir'):
     return raw_hp
 
 #------------- Wavelet ICA functions -------------#
-def ddencmp(x, wavelet='coif5', scale=1.0):
-    '''Python recreation of MATLABs ddencmp function for choosing wavelet threshold using Donoho method.'''
+def ddencmp(x, wavelet='db1', scale=2.0):
+    '''
+    Python recreation of MATLAB's ddencmp function for choosing wavelet threshold using 
+    Donoho and Johnstone universal threshold scaled by a robust variance estimate.
+    Arg 'scale' allows adjusting the threshold more manually.
+
+    '''
     n = len(x)
     (cA, cD)  = pywt.dwt(x,wavelet)
     noiselev = np.median(np.abs(cD))/0.6745
@@ -493,38 +503,41 @@ def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax
         ica: a fit MNE ICA object.
         cleaned: a new data file with the all but the data categories in 'keep' removed.
     '''
+    # Band pass data to band consistent with mne-icalabel training data
+    mne_filt = mne_raw.filter(l_freq=1.0, h_freq=100.0, verbose='warning')
+
     # Fit ICA to mne_raw
     print('  Fitting ICA with '+str(num_components)+' components.')
     ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
-    ica.fit(mne_raw, reject=reject)
+    ica.fit(mne_filt, reject=reject)
     
     # Use label_components function from ICLabel library to classify ICs and get their estimated probabilities
     print('  Using ICALabel to classify independent components.')
-    ic_labels = label_components(mne_raw, ica, method="iclabel")
+    ic_labels = label_components(mne_filt, ica, method="iclabel")
     labels = ic_labels["labels"]
     
-    # Exclude ICs not in 'keep' list and reconstruct cleaned data
+    # Exclude ICs not in 'keep' list and reconstruct cleaned raw data
     exclude_idx = [idx for idx, label in enumerate(labels) if label not in keep]
     print(f"  Excluding these ICA components: {exclude_idx}")
-    reconst_raw = mne_raw.copy()
-    cleaned = ica.apply(reconst_raw, exclude=exclude_idx, verbose=False)
+    cleaned = ica.apply(mne_raw, exclude=exclude_idx, verbose=False)
     return ic_labels, ica, cleaned
 
 def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
-    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=False)
+    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True)
 
-    # get global rejection threshold
-    reject = ar.get_rejection_threshold(epochs)
+    n_interpolates = np.array([1, 4, 32])
+    consensus_percs = np.linspace(0, 1.0, 11)
 
     # Use mne-compatible autoreject library to clean epoched data
     if method=='autoreject':
-        ar = AutoReject()
+        ar = AutoReject(n_interpolates, consensus_percs, picks=picks, thresh_method='random_search', random_state=42)
     elif method=='ransac':
         ar = Ransac()
     else:
         raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
-    self.epochs = ar.fit_transform(epochs)
+    epochs = ar.fit_transform(epochs)
+    return epochs
 
 #def artifact_subspace_reconstruction(raw, cutoff=20):
 #    '''
@@ -538,7 +551,7 @@ def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
 #    return raw
 
 #------------- Plotting functions -------------#
-def save_psd(save_file, mne_raw, xlim=[0,200]):
+def save_psd(save_file, mne_raw, xlim=[0,300]):
     '''
     Save a power spectral density plot of the time series in mne_raw to the specified absolute file path
     using MNE-Python's compute_psd function.
