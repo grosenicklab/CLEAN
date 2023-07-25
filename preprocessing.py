@@ -155,6 +155,7 @@ class Preprocessing(object):
             self.resample_rate = float(parameters.get('resampling', 'resampling_rate'))
 
             # data cleaning parameters 
+            self.screen_bad_channels = eval(parameters.get('cleaning', 'screen_bad_channels'))
             self.wICA = eval(parameters.get('cleaning', 'wICA'))
             self.wICA_num_components = int(parameters.get('cleaning', 'wICA_num_components'))
             self.icalabel = eval(parameters.get('cleaning', 'icalabel'))
@@ -207,11 +208,14 @@ class Preprocessing(object):
             pipeline_log.info('')
             pipeline_log.info('  Loaded: '+f)
 
+            # Save PSD of loaded and unfiltered data
+            save_psd(pjoin(self.results_savepath,'psd_unfiltered'+f.split('_')[3]+'_'+f.split('_')[4]+'.png'), raw)
+
             # If we are filtering each raw dataset separately, iterated over each filtering and appending,
             # otherwise append the unfiltered data into one file and then notch and HP filter the full concatenated data.
             if self.filter_raws_separately and self.filter_notch:
-                pipeline_log.info('  --> Notch at 60Hz.')
-                pipeline_log.info('  --> High pass at '+str(self.high_pass_cutoff)+'Hz.')
+                pipeline_log.info('  --> Data notch filtered at 60Hz.')
+                pipeline_log.info('  --> Data high pass filtered at '+str(self.high_pass_cutoff)+'Hz.')
                 pipeline_log.info('')
                 if i==0:
                     data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs, filter_type=self.filter_type)
@@ -225,8 +229,8 @@ class Preprocessing(object):
                     data = mne.concatenate_raws([data,raw], verbose='warning')
         if not self.filter_raws_separately and self.filter_notch:
             pipeline_log.info('  Filtering concatenated data.')
-            pipeline_log.info('  --> Notch filtered at 60Hz.')
-            pipeline_log.info('  --> High pass filtered at'+str(self.high_pass_cutoff)+'Hz.')
+            pipeline_log.info('  --> Data notch filtered at 60Hz.')
+            pipeline_log.info('  --> Data high pass filtered at'+str(self.high_pass_cutoff)+'Hz.')
             pipeline_log.info('')
             data = notch_and_hp(data)
 
@@ -235,7 +239,7 @@ class Preprocessing(object):
             self.data = data.filter(l_freq=self.band_pass_low, h_freq=self.band_pass_high, method=self.filter_type, verbose='warning')
 
         # Save PSD of loaded and filtered data
-        save_psd(pjoin(self.results_savepath,'prefiltered.png'), self.data)
+        save_psd(pjoin(self.results_savepath,'psd_prefiltered.png'), self.data)
 
         # If resample is set to True, resample the data
         if self.resample:
@@ -267,6 +271,15 @@ class Preprocessing(object):
         pipeline_log.info('  Data referenced to average.')
         pipeline_log.info('')
 
+        # Finding bad channels using NoisyChannels
+        if self.screen_bad_channels:
+            pipeline_log.info(co.color('periwinkle','Using NoisyChannels library to identify bad channels...'))
+            self._find_bad_channels()
+            pipeline_log.info((co.color('white','  Done.')))
+        else: 
+            pass
+        pipeline_log.info('')
+
         # Run wavelet ICA
         if self.wICA:
             pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
@@ -276,15 +289,6 @@ class Preprocessing(object):
             pipeline_log.info(co.color('periwinkle','Not running wICA...'))
         pipeline_log.info('')
 
-        # Finding bad channels using 
-        if self.icalabel:
-            pipeline_log.info(co.color('periwinkle','Using NoisyChannels library to identify bad channels...'))
-            self._find_bad_channels()
-            pipeline_log.info((co.color('white','  Done.')))
-        else: 
-            pass
-        pipeline_log.info('')
-
         # Run ICALabel to detect bad ICs
         if self.icalabel:
             pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning (this may take some time)...'))
@@ -292,6 +296,16 @@ class Preprocessing(object):
             pipeline_log.info((co.color('white','  Finished ICALabel.')))
         else: 
             pass
+        #Add : plot histogram of classification accuracies
+        pipeline_log.info('')
+
+        # Run wavelet ICA
+        if self.wICA:
+            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+            self._wICA()
+            pipeline_log.info((co.color('white','  Finished wICA.')))
+        else:
+            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
         pipeline_log.info('')
 
         # Run ASR
@@ -327,7 +341,9 @@ class Preprocessing(object):
         nc = NoisyChannels(self.data, random_state=42)
         nc.find_all_bads(channel_wise=True)
         #self.noisychannel_obj = nc
-        self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_correlation + nc.bad_by_dropout + nc.bad_by_ransac
+        self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_dropout + nc.bad_by_ransac + nc.bad_by_correlation
+        #nc.find_bad_by_correlation(frac_bad=0.05)
+        #self.bad_channels += nc.bad_by_correlation 
 
         # Print and log bad channel info
         pipeline_log.info((co.color('white','  Removed '+str(len(self.bad_channels))+' total:')))
@@ -355,24 +371,35 @@ class Preprocessing(object):
             self.iclabel_num_components = adj_num
 
     def _wICA(self):
+        pipeline_log.info((co.color('white','  --> Fitting ICA for wICA...')))
+
         ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
         ica.fit(self.data.get_data().T)  
         ICs = ica.fit_transform(self.data.get_data().T)
 
+        pipeline_log.info((co.color('white','  --> Removing wICA estimated artifacts...')))
         wICs, artifacts = wICA(ica, ICs)
         self.data._data -= artifacts.T
 
+        pipeline_log.info((co.color('white','  --> Generating wICA plots...')))
+
         # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
         save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
-        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs) 
+        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs.T) 
 
         # Save the wavelet-ICA-cleaned raw MNE-Python file 
         self.data.save(pjoin(self.results_savepath,'wICA_cleaned.fif'), overwrite=True)
 
-        # Generate artifact plots for wICA cleaned data g
+        # Generate artifact plots for wICA cleaned data 
         save_eog_plot(pjoin(self.results_savepath,'eog_wICA_cleaned.png'), self.data)
+        save_sparkline_ica(pjoin(self.results_savepath,'wICA_cleaned_eeg_timeseries.png'), self.data._data) 
+
+        pipeline_log.info((co.color('white','  --> Finished wICA.')))
 
     def _iclabel(self):
+        # Generate artifact plots for data before cleaning
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
+
         # Run ICALabel on the current data
         self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
@@ -385,9 +412,11 @@ class Preprocessing(object):
             save_single_ic_plot(pjoin(ic_save_path,'IC'+str(i).zfill(3)+'.png'), ic_ica, self.data, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
 
-        # Generate artifact plots for cleaned data and data without cleaning
-        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
+        # Generate artifact plots for cleaned data 
         save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned)
+
+        # Generate histogram of icalabel prediction probabilities
+        save_icalabel_prob_hist(pjoin(self.results_savepath,'icalabel_probability_histogram.png'), self.ic_labels)
 
         # Replace pipeline data with new cleaned data
         self.data = ic_cleaned
@@ -482,11 +511,23 @@ def wICA(ica, ICs, levels=5, wavelet='coif5', normalize=False,
         y = pywt.threshold(swc, thresh, mode=thresholding, substitute=0)
         wICs.append(pywt.iswt(y, wavelet, norm=normalize))
     wICs = np.asarray(wICs)[:,0:ICs.shape[0]].T
+    
+    print("  Computing cleaned inverse transform...")
     artifacts = ica.inverse_transform(ICs)
+
+    #artifacts = np.dot(ICs, ica.mixing_.T)
+
+    #mean_tol = 1e-6
+    #if ica.whiten:
+    #    for i, mean in enumerate(ica.mean_):
+    #        print("  adding back mean ", str(i))
+    #        if np.abs(mean) > mean_tol:
+    #            artifacts[:,i] = artifacts[:,i] + mean
+
     return wICs, artifacts
 
 #------------- ICA Label functions -------------#
-def iclabel(mne_raw, num_components=20, keep=["brain", "other"], method='infomax', fit_params=dict(extended=True), reject=None):
+def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_params=dict(extended=True), reject=None):
     '''
     Uses the MNE-ICALabel method to classify independent components into six different estimated sources of 
     variability: brain, muscle artifact, eye blink, heart beat, line noise, channel noise, and other.
@@ -531,7 +572,7 @@ def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
 
     # Use mne-compatible autoreject library to clean epoched data
     if method=='autoreject':
-        ar = AutoReject(n_interpolates, consensus_percs, picks=picks, thresh_method='random_search', random_state=42)
+        ar = AutoReject(n_interpolates, consensus_percs, thresh_method='random_search', random_state=42)
     elif method=='ransac':
         ar = Ransac()
     else:
@@ -562,6 +603,7 @@ def save_psd(save_file, mne_raw, xlim=[0,300]):
     axs[0].set_xlim(xlim)
     sns.despine()
     plt.savefig(save_file)
+    plt.close()
 
 def eeg_sparkline(timeseries,x=None,colors=None,normalize=True,color='black', alpha=0.5,
                      lwd=1.0,scale_factor=1.0, spacing = 1.3, figsize=(15,10), ax=None):
@@ -614,6 +656,7 @@ def save_sparkline_ica(save_file, ica_timeseries):
     ax = eeg_sparkline(ica_timeseries.T, scale_factor=1, normalize='max', alpha=0.7, figsize=(25, num_components))
     plt.xlabel('Time (samples)')
     plt.savefig(save_file)
+    plt.close()
 
 def save_ica_components(save_file, ica, ic_label_obj=None):
     '''
@@ -642,6 +685,7 @@ def save_ica_components(save_file, ica, ic_label_obj=None):
                 current_title = ax.get_title()
                 ax.set_title(current_title+':\n '+ic_label_list_part[j]+' ('+str(ic_probs_list_part[j])+'%)')
         plt.savefig(save_file.split('.')[0]+'_'+str(i).zfill(2)+save_file.split('.')[1])
+        plt.close()
 
 def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_obj=None):
     '''
@@ -662,6 +706,7 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_ob
         current_title = axs[0].get_title()
         axs[0].set_title(current_title+': '+ic_label+' ('+str(ic_prob)+'%)')
     plt.savefig(save_file)
+    plt.close()
 
 def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
     '''
@@ -674,6 +719,15 @@ def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
     average_ecg.plot_joint(show=False)
     sns.despine()
     plt.savefig(save_file)
+    plt.close()
+
+def save_icalabel_prob_hist(save_file, ic_label_obj):
+    plt.figure(figsize=(4,4))
+    ic_label_probs = ic_label_obj['y_pred_proba']
+    plt.hist(ic_label_probs, bins=30)
+    sns.despine()
+    plt.savefig(save_file)
+    plt.close()
 
 #-------------------------------------------------------------------------------                                     
 # Main                                                                                                               
