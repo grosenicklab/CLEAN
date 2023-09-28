@@ -281,13 +281,13 @@ class Preprocessing(object):
         pipeline_log.info('')
 
         # Run wavelet ICA
-        if self.wICA:
-            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
-            self._wICA()
-            pipeline_log.info((co.color('white','  Finished wICA.')))
-        else:
-            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
-        pipeline_log.info('')
+        #if self.wICA:
+        #    pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+        #    self._wICA()
+        #    pipeline_log.info((co.color('white','  Finished wICA.')))
+        #else:
+        #    pipeline_log.info(co.color('periwinkle','Not running wICA...'))
+        #pipeline_log.info('')
 
         # Run ICALabel to detect bad ICs
         if self.icalabel:
@@ -299,7 +299,7 @@ class Preprocessing(object):
         #Add : plot histogram of classification accuracies
         pipeline_log.info('')
 
-        # Run wavelet ICA
+        ## Run wavelet ICA
         if self.wICA:
             pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
             self._wICA()
@@ -384,15 +384,18 @@ class Preprocessing(object):
         pipeline_log.info((co.color('white','  --> Generating wICA plots...')))
 
         # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
-        save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
-        save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs.T) 
+        #save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
+        #save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs.T) 
 
         # Save the wavelet-ICA-cleaned raw MNE-Python file 
+        pipeline_log.info((co.color('white','  --> Saving wICA cleaned FIF file...')))
+
         self.data.save(pjoin(self.results_savepath,'wICA_cleaned.fif'), overwrite=True)
 
         # Generate artifact plots for wICA cleaned data 
+        pipeline_log.info((co.color('white','  --> Saving wICA cleaned FIF file...')))
         save_eog_plot(pjoin(self.results_savepath,'eog_wICA_cleaned.png'), self.data)
-        save_sparkline_ica(pjoin(self.results_savepath,'wICA_cleaned_eeg_timeseries.png'), self.data._data) 
+        #save_sparkline_ica(pjoin(self.results_savepath,'wICA_cleaned_eeg_timeseries.png'), self.data._data) 
 
         pipeline_log.info((co.color('white','  --> Finished wICA.')))
 
@@ -674,9 +677,13 @@ def save_ica_components(save_file, ica, ic_label_obj=None):
     # Iterate over batches of 20 ICs, making a plot for each group and adding labels and label probabilities from ICALabel
     for i in range(int(num_components/20)+1):
         if (i+1)*20 < num_components:
-            fig = ica.plot_components(picks=list(range(i*20,(i+1)*20)), show=False)
+            picks = list(range(i*20,(i+1)*20))
+            if len(picks) > 0:  
+                fig = ica.plot_components(picks=picks, show=False)
         else:
-            fig = ica.plot_components(picks=list(range(i*20,num_components)), show=False)
+            picks = list(range(i*20,num_components))
+            if len(picks) > 0:
+                fig = ica.plot_components(picks=picks, show=False)
         if ic_label_obj is not None:
             ic_label_list_part = ic_label_list[(i*20):((i+1)*20)]
             ic_probs_list_part = ic_label_probs[(i*20):((i+1)*20)]
