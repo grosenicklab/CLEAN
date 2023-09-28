@@ -685,14 +685,15 @@ def save_ica_components(save_file, ica, ic_label_obj=None):
             if len(picks) > 0:
                 fig = ica.plot_components(picks=picks, show=False)
         if ic_label_obj is not None:
-            ic_label_list_part = ic_label_list[(i*20):((i+1)*20)]
-            ic_probs_list_part = ic_label_probs[(i*20):((i+1)*20)]
-            axs = fig.get_axes()
-            for j,ax in enumerate(axs):
-                current_title = ax.get_title()
-                ax.set_title(current_title+':\n '+ic_label_list_part[j]+' ('+str(ic_probs_list_part[j])+'%)')
-        plt.savefig(save_file.split('.')[0]+'_'+str(i).zfill(2)+save_file.split('.')[1])
-        plt.close()
+            if len(picks) > 0:
+                ic_label_list_part = ic_label_list[(i*20):((i+1)*20)]
+                ic_probs_list_part = ic_label_probs[(i*20):((i+1)*20)]
+                axs = fig.get_axes()
+                for j,ax in enumerate(axs):
+                    current_title = ax.get_title()
+                    ax.set_title(current_title+':\n '+ic_label_list_part[j]+' ('+str(ic_probs_list_part[j])+'%)')
+            plt.savefig(save_file.split('.')[0]+'_'+str(i).zfill(2)+save_file.split('.')[1])
+            plt.close()
 
 def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_obj=None):
     '''
