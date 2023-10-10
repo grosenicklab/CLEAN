@@ -155,6 +155,8 @@ class Preprocessing(object):
             self.resample_rate = float(parameters.get('resampling', 'resampling_rate'))
 
             # data cleaning parameters 
+            self.known_bad_channels = eval(parameters.get('cleaning', 'known_bad_channels'))
+            self.bad_channels_list.append(self.known_bad_channels)
             self.screen_bad_channels = eval(parameters.get('cleaning', 'screen_bad_channels'))
             self.wICA = eval(parameters.get('cleaning', 'wICA'))
             self.wICA_num_components = int(parameters.get('cleaning', 'wICA_num_components'))
