@@ -298,6 +298,15 @@ class Preprocessing(object):
         #    pipeline_log.info(co.color('periwinkle','Not running wICA...'))
         #pipeline_log.info('')
 
+        # Segment data into epochs, identify remaining bad segments, and interpolate
+        if self.bad_segment_interpolation:
+            pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
+            self._interpolate_bad_segments()
+            pipeline_log.info((co.color('white','  Finished bad segment identification and interpolation.')))
+        else:
+            pipeline_log.info((co.color('periwinkle','Not running bad segment identification and interpolation.')))
+        pipeline_log.info('')
+
         # Run ICALabel to detect bad ICs
         if self.icalabel:
             pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning (this may take some time)...'))
@@ -324,15 +333,6 @@ class Preprocessing(object):
             pipeline_log.info((co.color('white','  Finished ASR.')))
         else:
             pipeline_log.info(co.color('periwinkle','Not running artifact subspace reconstruction...'))
-        pipeline_log.info('')
-
-        # Segment data into epochs, identify remaining bad segments, and interpolate
-        if self.bad_segment_interpolation:
-            pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
-            self._interpolate_bad_segments()
-            pipeline_log.info((co.color('white','  Finished bad segment identification and interpolation.')))
-        else:
-            pipeline_log.info((co.color('periwinkle','Not running bad segment identification and interpolation.')))
         pipeline_log.info('')
 
     def _notch_and_hp(self):
@@ -410,10 +410,11 @@ class Preprocessing(object):
 
     def _iclabel(self):
         # Generate artifact plots for data before cleaning
-        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.epochs) # self.data)
 
         # Run ICALabel on the current data
-        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
+        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.epochs, num_components=self.iclabel_num_components)
+        #self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
         save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), ic_ica, ic_label_obj=self.ic_labels)
@@ -444,7 +445,7 @@ class Preprocessing(object):
 
     def _interpolate_bad_segments(self):
         self.epochs = autoreject_bad_segments(self.data, method=self.segment_interpolation_method)
-        self.epochs.save(pjoin(self.results_savepath,'epochs_cleaned_interpolated.fif'), overwrite=True)
+        #self.epochs.save(pjoin(self.results_savepath,'epochs_cleaned_interpolated.fif'), overwrite=True)
 
         # Generate artifact plots for cleaned data and data without cleaning
         #save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_cleaned.png'), self.epochs)
