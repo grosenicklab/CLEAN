@@ -444,6 +444,7 @@ class Preprocessing(object):
 
     def _interpolate_bad_segments(self):
         self.epochs = autoreject_bad_segments(self.data, method=self.segment_interpolation_method)
+        self.epochs.save(pjoin(self.results_savepath,'epochs_cleaned_interpolated.fif'), overwrite=True)
 
         # Generate artifact plots for cleaned data and data without cleaning
         #save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_cleaned.png'), self.epochs)
