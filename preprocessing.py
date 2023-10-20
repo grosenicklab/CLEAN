@@ -410,7 +410,7 @@ class Preprocessing(object):
 
     def _iclabel(self):
         # Generate artifact plots for data before cleaning
-        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.epochs) # self.data)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.epochs, raw=False) # self.data)
 
         # Run ICALabel on the current data
         self.ic_labels, ic_ica, ic_cleaned = iclabel(self.epochs, num_components=self.iclabel_num_components)
@@ -426,7 +426,7 @@ class Preprocessing(object):
             plt.close()
 
         # Generate artifact plots for cleaned data 
-        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned, raw=False)
 
         # Generate histogram of icalabel prediction probabilities
         save_icalabel_prob_hist(pjoin(self.results_savepath,'icalabel_probability_histogram.png'), self.ic_labels)
@@ -727,14 +727,17 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_ob
     plt.savefig(save_file)
     plt.close()
 
-def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
+def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238'], raw=True):
     '''
     Save an eog artifact plot for the time series in mne_raw to the specified absolute file path.
     Uses MNE-Python's create_eog_epochs and plot_joint functions and defaults to channels 
     ['E32','E241','E25','E238'] which correspond to EGI's 256 channel hydrocel net eye motion channels.
 
     '''
-    average_ecg = mne.preprocessing.create_eog_epochs(mne_raw,ch_name=channel_list).average()
+    if raw:
+        average_ecg = mne.preprocessing.create_eog_epochs(mne_raw,ch_name=channel_list).average()
+    else:
+        average_ecg = mne.pick_channels(ch_names=channel_list).average()
     average_ecg.plot_joint(show=False)
     sns.despine()
     plt.savefig(save_file)
