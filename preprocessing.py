@@ -71,11 +71,14 @@ class Preprocessing(object):
         '''
         Initialize the pipeline. 
         '''
+        # Set date
         self.date = datetime.now().date().isoformat()
-        self.load_parameters(parameters_file)
-
+        
         # Set bad channels container
         self.bad_channels_list=['VREF']
+
+        # Load parameters from parameters_file
+        self.load_parameters(parameters_file)
 
         # Make a results folder for this run
         tmp = os.listdir(self.results_path)
