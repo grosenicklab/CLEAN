@@ -80,6 +80,10 @@ class Preprocessing(object):
         # Load parameters from parameters_file
         self.load_parameters(parameters_file)
 
+        # Make results path if it does not exist
+        if not os.path.exists(self.results_path):
+            os.makedirs(self.results_path)
+
         # Make a results folder for this run
         tmp = os.listdir(self.results_path)
         if 'results_run' in ''.join(tmp):
