@@ -576,7 +576,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
     cleaned = ica.apply(mne_raw, exclude=exclude_idx, verbose=False)
     return ic_labels, ica, cleaned
 
-def autoreject_bad_segments(raw, segment_length=4.0, method='autoreject'):
+def autoreject_bad_segments(raw, segment_length=2.0, method='autoreject'):
     # generate epochs object from raw
     epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True)
 
