@@ -742,6 +742,7 @@ def save_eog_plot(save_file, mne_raw, channel_list=['E32','E241','E25','E238']):
 def save_icalabel_prob_hist(save_file, ic_label_obj):
     plt.figure(figsize=(4,4))
     ic_label_probs = ic_label_obj['y_pred_proba']
+    # TODO: break this into probabilities for each class ICAlabel produces.
     plt.hist(ic_label_probs, bins=30)
     sns.despine()
     plt.savefig(save_file)
