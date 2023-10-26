@@ -57,9 +57,10 @@ class Preprocessing(object):
       (1) Data loading 
       (2) HP filtering 
       (3) Line noise removal 
-      (3) Channel-wise cleaning (Wavelet ICA cleaning, ICLabel ICA cleaning, etc.)
-      (5) Segmenting-wise rejection and interpolation
-      (6) Re-referencing
+      (4) Bad segment rejection
+      (5) Bad channel rejection
+      (6) Channel-wise cleaning (Wavelet ICA cleaning, ICLabel ICA cleaning, etc.)
+      (7) Re-referencing
 
     And generates plots and logs to evaluate each step. 
 
@@ -289,15 +290,6 @@ class Preprocessing(object):
             pass
         pipeline_log.info('')
 
-        # Run wavelet ICA
-        #if self.wICA:
-        #    pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
-        #    self._wICA()
-        #    pipeline_log.info((co.color('white','  Finished wICA.')))
-        #else:
-        #    pipeline_log.info(co.color('periwinkle','Not running wICA...'))
-        #pipeline_log.info('')
-
         # Segment data into epochs, identify remaining bad segments, and interpolate
         if self.bad_segment_interpolation:
             pipeline_log.info(co.color('periwinkle','Identifying and interpolating bad segments...'))
@@ -306,6 +298,15 @@ class Preprocessing(object):
         else:
             pipeline_log.info((co.color('periwinkle','Not running bad segment identification and interpolation.')))
         pipeline_log.info('')
+
+        # Run wavelet ICA
+        #if self.wICA:
+        #    pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+        #    self._wICA()
+        #    pipeline_log.info((co.color('white','  Finished wICA.')))
+        #else:
+        #    pipeline_log.info(co.color('periwinkle','Not running wICA...'))
+        #pipeline_log.info('')
 
         # Run ICALabel to detect bad ICs
         if self.icalabel:
@@ -410,11 +411,10 @@ class Preprocessing(object):
 
     def _iclabel(self):
         # Generate artifact plots for data before cleaning
-        #save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.epochs, raw=False) # self.data)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_precleaning.png'), self.data)
 
         # Run ICALabel on the current data
-        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.epochs, num_components=self.iclabel_num_components)
-        #self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
+        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
         save_ica_components(pjoin(self.results_savepath,'ICALabel_ICA_topoplots.png'), ic_ica, ic_label_obj=self.ic_labels)
@@ -426,7 +426,7 @@ class Preprocessing(object):
             plt.close()
 
         # Generate artifact plots for cleaned data 
-        #save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned, raw=False)
+        save_eog_plot(pjoin(self.results_savepath,'eog_icalabel_cleaned.png'), ic_cleaned)
 
         # Generate histogram of icalabel prediction probabilities
         save_icalabel_prob_hist(pjoin(self.results_savepath,'icalabel_probability_histogram.png'), self.ic_labels)
@@ -444,19 +444,26 @@ class Preprocessing(object):
         self.data = self.data.set_eeg_reference(reference_method)
 
     def _interpolate_bad_segments(self):
-        self.epochs = autoreject_bad_segments(self.data, method=self.segment_interpolation_method)
+        epochs, ar = autoreject_bad_segments(self.data, method=self.segment_interpolation_method)
         #self.epochs.save(pjoin(self.results_savepath,'epochs_cleaned_interpolated.fif'), overwrite=True)
 
+        # Generate rejected segment plot
+        save_autoreject_plot(pjoin(self.results_savepath,'autoreject_segments.png'), epochs, ar)
+
+        # Construct new RAW object from epoched data output by autoreject
+        X = np.concatenate(epochs.get_data(), axis=1) # new numpy array of appended epochs
+        self.data = mne.io.RawArray(X,self.data.info)
+
         # Generate artifact plots for cleaned data and data without cleaning
-        #save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_cleaned.png'), self.epochs)
+        save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_segments_cleaned.png'), self.data)
 
     def _artifact_subspace_reconstruction(self):
         # Run ASR
         data_cleaned = artifact_subspace_reconstruction(self.data, cutoff=self.asr_cutoff)
 
         # Generate artifact plots for cleaned data and data without cleaning
-        #save_eog_plot(pjoin(self.results_savepath,'pre_ASR.png'), self.data)
-        #save_eog_plot(pjoin(self.results_savepath,'post_ASR.png'), data_cleaned)
+        save_eog_plot(pjoin(self.results_savepath,'pre_ASR.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath,'post_ASR.png'), data_cleaned)
 
         # Replace pipeline data with new cleaned data
         self.data = data_cleaned
@@ -577,22 +584,22 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
     cleaned = ica.apply(mne_raw, exclude=exclude_idx, verbose=False)
     return ic_labels, ica, cleaned
 
-def autoreject_bad_segments(raw, segment_length=2.0, method='autoreject'):
+def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
     epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True)
 
+    # Use mne-compatible autoreject library to clean epoched data
     n_interpolates = np.array([1, 4, 32])
     consensus_percs = np.linspace(0, 1.0, 11)
 
-    # Use mne-compatible autoreject library to clean epoched data
     if method=='autoreject':
-        ar = AutoReject(n_interpolates, consensus_percs, thresh_method='random_search', random_state=42)
+        ar = AutoReject(n_interpolates, consensus_percs, thresh_method='bayesian_optimization', random_state=42)
     elif method=='ransac':
         ar = Ransac()
     else:
         raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
     epochs = ar.fit_transform(epochs)
-    return epochs
+    return epochs, ar
 
 #def artifact_subspace_reconstruction(raw, cutoff=20):
 #    '''
@@ -727,18 +734,14 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_ob
     plt.savefig(save_file)
     plt.close()
 
-def save_eog_plot(save_file, mne_in, channel_list=['E32','E241','E25','E238'], raw=True):
+def save_eog_plot(save_file, mne_in, channel_list=['E32','E241','E25','E238']):
     '''
     Save an eog artifact plot for the time series in mne_raw to the specified absolute file path.
     Uses MNE-Python's create_eog_epochs and plot_joint functions and defaults to channels 
     ['E32','E241','E25','E238'] which correspond to EGI's 256 channel hydrocel net eye motion channels.
 
     '''
-    if raw:
-        average_ecg = mne.preprocessing.create_eog_epochs(mne_in,ch_name=channel_list).average()
-    else:
-        #average_ecg = mne_in.average(picks=channel_list)
-        pass
+    average_ecg = mne.preprocessing.create_eog_epochs(mne_in,ch_name=channel_list).average()
     average_ecg.plot_joint(show=False)
     sns.despine()
     plt.savefig(save_file)
@@ -750,6 +753,11 @@ def save_icalabel_prob_hist(save_file, ic_label_obj):
     # TODO: break this into probabilities for each class ICAlabel produces.
     plt.hist(ic_label_probs, bins=30)
     sns.despine()
+    plt.savefig(save_file)
+    plt.close()
+
+def save_autoreject_plot(save_file, epochs, ar_obj):
+    ar_obj.get_reject_log(epochs).plot()
     plt.savefig(save_file)
     plt.close()
 
