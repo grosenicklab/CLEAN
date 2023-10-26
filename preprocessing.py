@@ -757,7 +757,7 @@ def save_icalabel_prob_hist(save_file, ic_label_obj):
     plt.close()
 
 def save_autoreject_plot(save_file, epochs, ar_obj):
-    ar_obj.get_reject_log(epochs).plot()
+    ar_obj.get_reject_log(epochs).plot(show=False)
     plt.savefig(save_file)
     plt.close()
 
