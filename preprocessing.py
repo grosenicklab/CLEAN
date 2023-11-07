@@ -152,7 +152,13 @@ class Preprocessing(object):
             self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
             self.filter_notch = eval(parameters.get('filtering', 'notch'))
             self.notch_freqs = np.array(parameters.get('filtering', 'notch_freqs').strip('][').split(',')).astype(float)
-            self.notch_widths = np.array(parameters.get('filtering', 'notch_widths').strip('][').split(',')).astype(float)
+            self.notch_widths = parameters.get('filtering', 'notch_widths').strip('][').split(',')
+            for i,nw in enumerate(self.notch_widths):
+                if nw is None:
+                    self.notch_widths[i] = nw
+                else:
+                    self.notch_withs[i] = nw.astype(float)
+            self.notch_withs = np.array(self.notch_widths)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
             self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
             self.band_pass_low = float(parameters.get('filtering', 'band_pass_low'))
