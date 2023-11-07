@@ -152,6 +152,7 @@ class Preprocessing(object):
             self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
             self.filter_notch = eval(parameters.get('filtering', 'notch'))
             self.notch_freqs = np.array(parameters.get('filtering', 'notch_freqs').strip('][').split(',')).astype(float)
+            self.notch_widths = np.array(parameters.get('filtering', 'notch_widths').strip('][').split(',')).astype(float)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
             self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
             self.band_pass_low = float(parameters.get('filtering', 'band_pass_low'))
@@ -231,7 +232,7 @@ class Preprocessing(object):
                     data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs, filter_type=self.filter_type)
                 else:
                     data = mne.concatenate_raws([data,notch_and_hp(raw, l_freq=self.high_pass_cutoff, 
-                            notch_freqs=self.notch_freqs, filter_type=self.filter_type)], verbose='warning')
+                            notch_freqs=self.notch_freqs, notch_widths=self.notch_widths, filter_type=self.filter_type)], verbose='warning')
             else:
                 if i==0:
                     data = raw
