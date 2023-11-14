@@ -157,7 +157,7 @@ class Preprocessing(object):
                 if nw is None:
                     self.notch_widths[i] = nw
                 else:
-                    self.notch_withs[i] = nw.astype(float)
+                    self.notch_withs[i] = float(nw)
             self.notch_withs = np.array(self.notch_widths)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
             self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
