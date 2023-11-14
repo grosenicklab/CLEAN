@@ -156,7 +156,7 @@ class Preprocessing(object):
             for i,nw in enumerate(self.notch_widths):
                 if nw == None:
                     self.notch_widths[i] = nw
-                elif:
+                elif
                     self.notch_widths[i] = float(nw)
                 else:
                     raise ValueError("notch_widths parameter must be list of None or floats.")
