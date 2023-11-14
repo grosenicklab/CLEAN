@@ -154,12 +154,13 @@ class Preprocessing(object):
             self.notch_freqs = np.array(parameters.get('filtering', 'notch_freqs').strip('][').split(',')).astype(float)
             self.notch_widths = parameters.get('filtering', 'notch_widths').strip('][').split(',')
             for i,nw in enumerate(self.notch_widths):
-                if nw == None:
-                    self.notch_widths[i] = nw
-                elif
-                    self.notch_widths[i] = float(nw)
-                else:
-                    raise ValueError("notch_widths parameter must be list of None or floats.")
+                try:
+                    if nw == None:
+                        self.notch_widths[i] = nw
+                    else:
+                        self.notch_widths[i] = float(nw)
+                except Exception as e:
+                    print(e)
             self.notch_withs = np.array(self.notch_widths)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
             self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
