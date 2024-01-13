@@ -147,6 +147,8 @@ class Preprocessing(object):
             self.data_from_resting_state = eval(parameters.get('data_from', 'resting_state'))
             self.data_from_TMS = eval(parameters.get('data_from', 'TMS'))
             self.data_from_motor = eval(parameters.get('data_from', 'motor'))
+            self.data_from_fif = eval(parameters.get('data_from', 'fif'))
+
 
             # filtering parameters
             self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
@@ -217,19 +219,26 @@ class Preprocessing(object):
             filenames = [f for f in os.listdir(self.input_path) if 'treatment' in f]
         elif self.data_from_motor:
             filenames = [f for f in os.listdir(self.input_path) if 'motor' in f]
+        elif self.data_from_fif:
+            filenames = [f for f in os.listdir(self.input_path) if 'fif' in f]
+            print('filenames:',filenames)
         else:
             raise ValueError('Data type is misspecified or does not exist in the input folder.')
 
         # Iterate over filenames in list
         for i,f in enumerate(filenames):
             data_raw_file = os.path.join(self.input_path, f)
-            raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning') # MNE 1.4.2
+            if not self.data_from_fif:
+                raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning') # MNE 1.4.2
+            else:
+                raw = mne.io.read_raw_fif(data_raw_file,  preload=True)
             raw.info["bads"] = self.bad_channels_list
             pipeline_log.info('')
             pipeline_log.info('  Loaded: '+f)
 
             # Save PSD of loaded and unfiltered data
-            save_psd(pjoin(self.results_savepath,'psd_unfiltered'+f.split('_')[3]+'_'+f.split('_')[4]+'.png'), raw)
+            if not self.data_from_fif:
+                save_psd(pjoin(self.results_savepath,'psd_unfiltered'+f.split('_')[3]+'_'+f.split('_')[4]+'.png'), raw)
 
             # If we are filtering each raw dataset separately, iterated over each filtering and appending,
             # otherwise append the unfiltered data into one file and then notch and HP filter the full concatenated data.
@@ -481,16 +490,15 @@ class Preprocessing(object):
         # Save the ASR-cleaned raw MNE-Python file 
         self.data.save(pjoin(self.results_savepath,'ASR_cleaned.fif'), overwrite=True)
 
-
 #------------- Filtering functions -------------#
-def notch_and_hp(raw, notch_freqs, l_freq=1.0, h_freq=None, filter_type='fir'):
+def notch_and_hp(raw, notch_freqs, notch_widths=None, l_freq=1.0, h_freq=None, filter_type='fir'):
     notch_freqs = np.array(notch_freqs)
-    raw_notch = raw.copy().notch_filter(freqs=notch_freqs, verbose='warning')
+    raw_notch = raw.copy().notch_filter(freqs=notch_freqs, notch_widths=notch_widths, verbose='warning')
     raw_hp = raw_notch.filter(l_freq=l_freq, h_freq=h_freq, method=filter_type, verbose='warning')
     return raw_hp
 
 #------------- Wavelet ICA functions -------------#
-def ddencmp(x, wavelet='db1', scale=2.0):
+def ddencmp(x, wavelet='db1', scale=1.0):
     '''
     Python recreation of MATLAB's ddencmp function for choosing wavelet threshold using 
     Donoho and Johnstone universal threshold scaled by a robust variance estimate.
@@ -780,5 +788,5 @@ if __name__ == '__main__':
     from argparse import SUPPRESS
     parser = ArgumentParser()
 
-    pred_pipeline = Preprocessing('test_config.cfg')
+    pred_pipeline = Preprocessing('isaac_eeg_config.cfg')
     pred_pipeline.run()
