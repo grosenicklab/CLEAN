@@ -1,5 +1,6 @@
 # To the extent possible under law, the authors have waived all copyright and related or neighboring rights 
 # to the CLEAN project governance document as per the CC-0 public domain dedication license.
+
 # (TODO: governance document)
 # 
 # Written by Sanweda Mahagabin and Logan Grosenick, 2023.
@@ -15,7 +16,7 @@ import shutil
 from datetime import datetime
 import subprocess
 import configparser
-
+import gc
 import numpy as np
 import h5py
 import multiprocessing
@@ -70,12 +71,13 @@ class Preprocessing(object):
     '''
     def __init__(self, parameters_file):
         '''
-        Initialize the pipeline. 
+        Initialize the pipeline using a parameters file. See test_config.cfg in this directory for an example.
+
         '''
         # Set date
         self.date = datetime.now().date().isoformat()
         
-        # Set bad channels container
+        # Set bad channels list
         self.bad_channels_list=['VREF']
 
         # Load parameters from parameters_file
@@ -137,6 +139,11 @@ class Preprocessing(object):
             print('Could not load parameters from ', parameters_file)
             sys.exit(1)
         try:
+            # general setting parameters
+            self.mne_log_level = parameters.get('general', 'mne_log_level')
+            pipeline_log.setLevel(self.mne_log_level)
+            self.memory_intensive = eval(parameters.get('general', 'memory_intensive'))
+
             # path parameters
             self.input_path = parameters.get('paths', 'input_path')
             self.results_path = parameters.get('paths', 'results_path')
@@ -148,7 +155,7 @@ class Preprocessing(object):
             self.data_from_TMS = eval(parameters.get('data_from', 'TMS'))
             self.data_from_motor = eval(parameters.get('data_from', 'motor'))
             self.data_from_fif = eval(parameters.get('data_from', 'fif'))
-
+            self.memory_intensive= eval(parameters.get('data_from', 'memory_intensive'))
 
             # filtering parameters
             self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
@@ -186,6 +193,7 @@ class Preprocessing(object):
             self.asr_cutoff = float(parameters.get('cleaning', 'asr_cutoff'))
             self.bad_segment_interpolation = eval(parameters.get('cleaning', 'bad_segment_interpolation'))
             self.segment_interpolation_method = parameters.get('cleaning', 'segment_interpolation_method')
+
         except Exception as e:
             print('Failure loading parameters with error:',e)       
             pipeline_log.info("  An error occured when loding parameters: " +str(e))
@@ -256,6 +264,7 @@ class Preprocessing(object):
                     data = raw
                 else:
                     data = mne.concatenate_raws([data,raw], verbose='warning')
+            del raw; gc.collect()     
         if not self.filter_raws_separately and self.filter_notch:
             pipeline_log.info('  Filtering concatenated data.')
             pipeline_log.info('  --> Data notch filtered at 60Hz.')
@@ -266,6 +275,8 @@ class Preprocessing(object):
         # If band_pass is set to True, we bandpass the data at the values specified in the parameters file.
         if self.filter_band_pass:
             self.data = data.filter(l_freq=self.band_pass_low, h_freq=self.band_pass_high, method=self.filter_type, verbose='warning')
+
+        del data; gc.collect()
 
         # Save PSD of loaded and filtered data
         save_psd(pjoin(self.results_savepath,'psd_prefiltered.png'), self.data)
@@ -368,7 +379,10 @@ class Preprocessing(object):
         # Estimate bad channels
         sfreq = self.resample_rate
         nc = NoisyChannels(self.data, random_state=42)
-        nc.find_all_bads(channel_wise=True)
+        if not self.memory_intensive:
+            nc.find_all_bads(channel_wise=True)
+        else:
+            nc.find_all_bads(channel_wise=False)
         #self.noisychannel_obj = nc
         self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_dropout + nc.bad_by_ransac + nc.bad_by_correlation
         #nc.find_bad_by_correlation(frac_bad=0.05)
@@ -383,8 +397,6 @@ class Preprocessing(object):
         pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_ransac))+' channels found to be bad by RANSAC.')))
 
         # Interpolate bad channels
-        #for bad in self.bad_channels:
-        #    self.data.info["bads"].append(bad)
         self.data.info['bads'].extend(self.bad_channels)
         self.data.interpolate_bads(reset_bads=True) # This will clear out data.info['bads']
         self.data.info['bads'] = self.bad_channels_list # Reset data.info['bads'] to always bad channels
@@ -471,7 +483,16 @@ class Preprocessing(object):
 
         # Construct new RAW object from epoched data output by autoreject
         X = np.concatenate(epochs.get_data(), axis=1) # new numpy array of appended epochs
+        del epochs; gc.collect()
+
+        self.montage = self.data.get_montage()
         self.data = mne.io.RawArray(X,self.data.info)
+        self.data.set_montage(self.montage)
+
+        if self.memory_intensive:
+            self.data.save(pjoin(self.results_savepath,'data_post_autoreject_raw.fif'),overwrite=True)
+
+        del X; gc.collect()
 
         # Generate artifact plots for cleaned data and data without cleaning
         save_eog_plot(pjoin(self.results_savepath,'eog_autoreject_segments_cleaned.png'), self.data)
@@ -486,6 +507,7 @@ class Preprocessing(object):
 
         # Replace pipeline data with new cleaned data
         self.data = data_cleaned
+        del data_cleaned; gc.collect()
 
         # Save the ASR-cleaned raw MNE-Python file 
         self.data.save(pjoin(self.results_savepath,'ASR_cleaned.fif'), overwrite=True)
@@ -493,7 +515,7 @@ class Preprocessing(object):
 #------------- Filtering functions -------------#
 def notch_and_hp(raw, notch_freqs, notch_widths=None, l_freq=1.0, h_freq=None, filter_type='fir'):
     notch_freqs = np.array(notch_freqs)
-    raw_notch = raw.copy().notch_filter(freqs=notch_freqs, notch_widths=notch_widths, verbose='warning')
+    raw_notch = raw.copy().notch_filter(freqs=notch_freqs, notch_widths=notch_widths, verbose='warning'); del raw; gc.collect()
     raw_hp = raw_notch.filter(l_freq=l_freq, h_freq=h_freq, method=filter_type, verbose='warning')
     return raw_hp
 
@@ -604,7 +626,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
 
 def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
-    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True)
+    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True); del raw; gc.collect()
 
     # Use mne-compatible autoreject library to clean epoched data
     n_interpolates = np.array([1, 4, 32])
@@ -788,5 +810,5 @@ if __name__ == '__main__':
     from argparse import SUPPRESS
     parser = ArgumentParser()
 
-    pred_pipeline = Preprocessing('isaac_eeg_config.cfg')
+    pred_pipeline = Preprocessing('test_config.cfg')
     pred_pipeline.run()
