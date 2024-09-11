@@ -27,5 +27,5 @@ def ensure_path(path):
                 raise
     return path
 
-if __name__ is "__main__":
+if __name__ == "__main__":
     pass

@@ -55,9 +55,9 @@ pipeline_log = logging.getLogger('CLEAN_preprocessing_pipeline')
 class Preprocessing(object):
     '''
     This class sequentially runs:
-      (1) Data loading 
-      (2) HP filtering 
-      (3) Line noise removal 
+      (1) Data loading
+      (2) HP filtering
+      (3) Line noise removal
       (4) Bad segment rejection
       (5) Bad channel rejection
       (6) Channel-wise cleaning (Wavelet ICA cleaning, ICLabel ICA cleaning, etc.)
@@ -139,9 +139,24 @@ class Preprocessing(object):
             print('Could not load parameters from ', parameters_file)
             sys.exit(1)
         try:
+            # Map string log levels to logging module constants
+            log_level_map = {
+                'DEBUG': logging.DEBUG,
+                'INFO': logging.INFO,
+                'WARNING': logging.WARNING,
+                'ERROR': logging.ERROR,
+                'CRITICAL': logging.CRITICAL
+            }
+
             # general setting parameters
-            self.mne_log_level = parameters.get('general', 'mne_log_level')
-            pipeline_log.setLevel(self.mne_log_level)
+            self.mne_log_level = parameters.get('general', 'mne_log_level').upper()
+
+            # Set the log level if it's a recognized level, otherwise raise an error
+            if self.mne_log_level in log_level_map:
+                pipeline_log.setLevel(log_level_map[self.mne_log_level])
+            else:
+                raise ValueError(f"Unknown log level: {self.mne_log_level}")
+            
             self.memory_intensive = eval(parameters.get('general', 'memory_intensive'))
 
             # path parameters
@@ -155,21 +170,22 @@ class Preprocessing(object):
             self.data_from_TMS = eval(parameters.get('data_from', 'TMS'))
             self.data_from_motor = eval(parameters.get('data_from', 'motor'))
             self.data_from_fif = eval(parameters.get('data_from', 'fif'))
-            self.memory_intensive= eval(parameters.get('data_from', 'memory_intensive'))
+            #self.memory_intensive = eval(parameters.get('data_from', 'memory_intensive'))
 
             # filtering parameters
             self.filter_raws_separately = eval(parameters.get('filtering', 'filter_raws_separately'))
             self.filter_notch = eval(parameters.get('filtering', 'notch'))
             self.notch_freqs = np.array(parameters.get('filtering', 'notch_freqs').strip('][').split(',')).astype(float)
             self.notch_widths = parameters.get('filtering', 'notch_widths').strip('][').split(',')
-            for i,nw in enumerate(self.notch_widths):
+            for i, nw in enumerate(self.notch_widths):
                 try:
-                    if nw == None:
-                        self.notch_widths[i] = nw
+                    if nw.strip() == 'None':
+                        self.notch_widths[i] = None
                     else:
                         self.notch_widths[i] = float(nw)
                 except Exception as e:
-                    print(e)
+                    print(f"Error converting notch_width {nw}: {e}")
+
             self.notch_withs = np.array(self.notch_widths)
             self.high_pass_cutoff = float(parameters.get('filtering', 'high_pass_cutoff'))
             self.filter_band_pass = eval(parameters.get('filtering', 'band_pass'))
@@ -181,7 +197,7 @@ class Preprocessing(object):
             self.resample = eval(parameters.get('resampling', 'resample'))
             self.resample_rate = float(parameters.get('resampling', 'resampling_rate'))
 
-            # data cleaning parameters 
+            # data cleaning parameters
             self.known_bad_channels = eval(parameters.get('cleaning', 'known_bad_channels'))
             self.bad_channels_list.extend(self.known_bad_channels)
             self.screen_bad_channels = eval(parameters.get('cleaning', 'screen_bad_channels'))
@@ -196,7 +212,7 @@ class Preprocessing(object):
 
         except Exception as e:
             print('Failure loading parameters with error:',e)       
-            pipeline_log.info("  An error occured when loding parameters: " +str(e))
+            pipeline_log.info("  An error occured when loading parameters: " +str(e))
             sys.exit(1)
 
         # Plot parameters -- UNDER CONSTRUCTION
@@ -209,7 +225,7 @@ class Preprocessing(object):
         plt.rcParams['figure.dpi'] = 100
 
         # MNE output verbose-ness
-        mne.set_log_level(parameters.get('logging', 'mne_log_level'))  
+        mne.set_log_level(parameters.get('general', 'mne_log_level'))
 
         self.parameters_file = parameters_file
 
@@ -237,12 +253,12 @@ class Preprocessing(object):
         for i,f in enumerate(filenames):
             data_raw_file = os.path.join(self.input_path, f)
             if not self.data_from_fif:
-                raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning') # MNE 1.4.2
+                raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning')  # MNE 1.4.2
             else:
-                raw = mne.io.read_raw_fif(data_raw_file,  preload=True)
+                raw = mne.io.read_raw_fif(data_raw_file, preload=True)
             raw.info["bads"] = self.bad_channels_list
             pipeline_log.info('')
-            pipeline_log.info('  Loaded: '+f)
+            pipeline_log.info('  Loaded: ' + f)
 
             # Save PSD of loaded and unfiltered data
             if not self.data_from_fif:
@@ -252,13 +268,14 @@ class Preprocessing(object):
             # otherwise append the unfiltered data into one file and then notch and HP filter the full concatenated data.
             if self.filter_raws_separately and self.filter_notch:
                 pipeline_log.info('  --> Data notch filtered at 60Hz.')
-                pipeline_log.info('  --> Data high pass filtered at '+str(self.high_pass_cutoff)+'Hz.')
+                pipeline_log.info('  --> Data high pass filtered at ' + str(self.high_pass_cutoff) + 'Hz.')
                 pipeline_log.info('')
-                if i==0:
-                    data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs, filter_type=self.filter_type)
+                if i == 0:
+                    data = notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs,
+                                        notch_widths=self.notch_widths, filter_type=self.filter_type)
                 else:
-                    data = mne.concatenate_raws([data,notch_and_hp(raw, l_freq=self.high_pass_cutoff, 
-                            notch_freqs=self.notch_freqs, notch_widths=self.notch_widths, filter_type=self.filter_type)], verbose='warning')
+                    data = mne.concatenate_raws([data, notch_and_hp(raw, l_freq=self.high_pass_cutoff, notch_freqs=self.notch_freqs,
+                                                                    notch_widths=self.notch_widths, filter_type=self.filter_type)], verbose='warning')
             else:
                 if i==0:
                     data = raw
@@ -513,8 +530,9 @@ class Preprocessing(object):
         self.data.save(pjoin(self.results_savepath,'ASR_cleaned.fif'), overwrite=True)
 
 #------------- Filtering functions -------------#
-def notch_and_hp(raw, notch_freqs, notch_widths=None, l_freq=1.0, h_freq=None, filter_type='fir'):
+def notch_and_hp(raw, notch_freqs, notch_widths, l_freq=1.0, h_freq=None, filter_type='fir'):
     notch_freqs = np.array(notch_freqs)
+    notch_widths = np.array(notch_widths)
     raw_notch = raw.copy().notch_filter(freqs=notch_freqs, notch_widths=notch_widths, verbose='warning'); del raw; gc.collect()
     raw_hp = raw_notch.filter(l_freq=l_freq, h_freq=h_freq, method=filter_type, verbose='warning')
     return raw_hp
