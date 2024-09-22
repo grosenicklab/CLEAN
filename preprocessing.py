@@ -99,25 +99,38 @@ class Preprocessing(object):
         self.results_savepath = pjoin(self.results_path, results_foldername)
         os.makedirs(self.results_savepath)
 
-        # Set up a logfile for this run.  We append the date to the 
+        # Set up a logfile for this run.  We append the date to the
         # logfile, so each run of the pipeline is unique.
         pipeline_log.setLevel(logging.DEBUG)
         self.log_path = pjoin(self.results_savepath, 'logs')
         if not os.path.exists(self.log_path): os.makedirs(self.log_path)
         self.local_logfile = pjoin(self.log_path, time.strftime("%Y-%b-%d-%H:%M:%S_log.txt", time.localtime()))
-        fh = logging.FileHandler(self.local_logfile)
-        fh.setLevel(logging.DEBUG)
-        format = '%(asctime)s - %(levelname)s - %(message)s'
-        fh_formatter = logging.Formatter(format)
-        fh.setFormatter(fh_formatter)
-        pipeline_log.addHandler(fh)
 
-        # Set up the console handler, which logs INFO and higher level messages.
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        ch_formatter = logging.Formatter('%(message)s')
-        ch.setFormatter(ch_formatter)
-        pipeline_log.addHandler(ch)
+        # Ensure messages aren't passed to the root logger to prevent duplicate messages
+        pipeline_log.propagate = False  
+
+        # A flag to check if logging handlers have been set
+        if not pipeline_log.handlers:
+            # Set up a logfile for this run. We append the date to the logfile so each run is unique.
+            pipeline_log.setLevel(logging.DEBUG)
+            self.log_path = pjoin(self.results_savepath, 'logs')
+            if not os.path.exists(self.log_path): os.makedirs(self.log_path)
+            self.local_logfile = pjoin(self.log_path, time.strftime("%Y-%b-%d-%H:%M:%S_log.txt", time.localtime()))
+
+            # Set up the logging handlers only once
+            fh = logging.FileHandler(self.local_logfile)
+            fh.setLevel(logging.DEBUG)
+            format = '%(asctime)s - %(levelname)s - %(message)s'
+            fh_formatter = logging.Formatter(format)
+            fh.setFormatter(fh_formatter)
+            pipeline_log.addHandler(fh)
+
+            # Set up the console handler, which logs INFO and higher level messages.
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.INFO)
+            ch_formatter = logging.Formatter('%(message)s')
+            ch.setFormatter(ch_formatter)
+            pipeline_log.addHandler(ch)
 
         # Make a copy of the parameters file used for this run
         param_path = pjoin(self.results_savepath, 'parameters')
@@ -212,7 +225,7 @@ class Preprocessing(object):
 
         except Exception as e:
             print('Failure loading parameters with error:', e)
-            pipeline_log.info("An error occured when loading parameters: " + str(e))
+            pipeline_log.info("  An error occured when loading parameters: " + str(e))
             sys.exit(1)
 
         # Plot parameters -- UNDER CONSTRUCTION
@@ -243,26 +256,34 @@ class Preprocessing(object):
                 save_psd(pjoin(self.results_savepath, 'psd_unfiltered' + filename.split('_')[3] + '_' + filename.split('_')[4] + '.png'), raw)
             else:
                 raw = mne.io.read_raw_fif(data_raw_file, preload=True)
+
             raw.info["bads"] = self.bad_channels_list
             pipeline_log.info(f'Loaded: {filename}')
 
             return raw
 
         def filter_and_concatenate(filenames, data_type):
+            # Sort filenames to ensure file concatenation occurs in order
+            if data_type == 'pre' or data_type == 'post':
+                try:
+                    filenames = sorted(filenames, key=lambda f: int(re.search(r'reststate(\d+)', f).group(1)))
+                except AttributeError:
+                    raise ValueError("Filename does not contain 'reststateX' format")
+
             def apply_filtering(raw_data):
                 # Applies filtering to raw data based on class parameters."""
                 if self.filter_notch and self.filter_band_pass:
-                    pipeline_log.info('--> Data notch filtered at ' + str(self.notch_freqs[0]) + ' Hz.')
-                    pipeline_log.info('--> Data high pass filtered at ' + str(self.band_pass_low) + ' Hz.')
+                    pipeline_log.info(f'--> {self.notch_freqs[0]} Hz notch filter applied.')
+                    pipeline_log.info(f'--> {self.band_pass_low} - {self.band_pass_high} Hz band pass filter applied.')
                     return notch_and_hp(raw_data, l_freq=self.band_pass_low, h_freq=self.band_pass_high,
                                         notch_freqs=self.notch_freqs, notch_widths=self.notch_widths,
                                         filter_type=self.filter_type)
                 elif self.filter_band_pass:
-                    pipeline_log.info('--> Data high pass filtered at ' + str(self.band_pass_low) + ' Hz.')
+                    pipeline_log.info(f'--> {self.band_pass_low} - {self.band_pass_high} Hz band pass filter applied.')
                     return notch_and_hp(raw_data, l_freq=self.band_pass_low, h_freq=self.band_pass_high, 
                                         notch_freqs=None, notch_widths=None, filter_type=self.filter_type)
                 elif self.filter_notch:
-                    pipeline_log.info('--> Data notch filtered at ' + str(self.notch_freqs[0]) + ' Hz.')
+                    pipeline_log.info(f'--> {self.notch_freqs[0]} Hz notch filter applied.')
                     return notch_and_hp(raw_data, l_freq=None, h_freq=None, notch_freqs=self.notch_freqs,
                                         notch_widths=self.notch_widths, filter_type=self.filter_type)
                 else:
@@ -270,7 +291,6 @@ class Preprocessing(object):
 
             for f in filenames:
                 raw = load_file(f)
-                pipeline_log.info(f'{data_type} data shape: {raw._data.shape}')
 
                 # If filtering separately, apply filters to each raw dataset before concatenation
                 if self.filter_raws_separately:
@@ -281,6 +301,7 @@ class Preprocessing(object):
                     data_list.append(raw)
 
                 # Concatenate all data (filtered if self.filter_raws_separately=True, otherwise unfiltered)
+                # add line here to specify that restate 1 recording should be in front
                 data = mne.concatenate_raws(data_list, verbose='warning')
 
                 # If not filtering separately, apply filtering after concatenation
@@ -288,10 +309,10 @@ class Preprocessing(object):
                     data = apply_filtering(data)
 
             # Save the filtered data to raw MNE-Python file
-            data.save(pjoin(self.results_savepath, 'filtered.fif'), overwrite=True)
+            data.save(pjoin(self.results_savepath, f'{data_type}_filtered.fif'), overwrite=True)
 
             # Plot filtered data artifacts
-            save_eog_plot(pjoin(self.results_savepath, 'eog_filtered.png'), data)
+            save_eog_plot(pjoin(self.results_savepath, f'{data_type}_eog_filtered.png'), data)
 
             return data
 
@@ -301,21 +322,18 @@ class Preprocessing(object):
         # Then apply filtering
         if self.data_types['resting_state']:
             if self.data_types['pre']:
-                filenames_pre = [f for f in os.listdir(self.input_path) if 'reststate' in f and 'pre' in f]
-                pipeline_log.info(f'Pre-treatment resting state filenames: {filenames_pre}')
+                filenames_pre = [f for f in os.listdir(self.input_path) if 'pre' in f.split('_')]
                 self.data['pre'] = filter_and_concatenate(filenames_pre, 'pre')
                 pipeline_log.info(f'Pre-treatment resting state data shape: {self.data['pre']._data.shape}')
                 save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_pre.png'), self.data['pre'])
             if self.data_types['post']:
-                filenames_post = [f for f in os.listdir(self.input_path) if 'reststate' in f and 'post' in f]
-                pipeline_log.info(f'Post-treatment resting state filenames: {filenames_pre}')
+                filenames_post = [f for f in os.listdir(self.input_path) if 'post' in f.split('_')]
                 self.data['post'] = filter_and_concatenate(filenames_post, 'post')
                 pipeline_log.info(f'Post-treatment resting state data shape: {self.data['post']._data.shape}')
                 save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_post.png'), self.data['post'])
             elif self.data_from_TMS or self.data_from_motor or self.data_from_fif:
                 filenames_other = [f for f in os.listdir(self.input_path) if 'treatment' in f]
-                pipeline_log.info(f'Filenames: {filenames_other}')
-                self.data['other'] = filter_and_concatenate(filenames_post, 'other')
+                self.data['other'] = filter_and_concatenate(filenames_other, 'other')
                 pipeline_log.info(f'Data shape: {self.data['other']._data.shape}')
                 save_psd(pjoin(self.results_savepath, 'psd_filtered.png'), self.data['other'])
             else:
@@ -326,7 +344,7 @@ class Preprocessing(object):
         co.clear_screen()
         pipeline_log.info((co.color('purple', co.bold_text('CLEAN preprocessing pipeline.'))))
         pipeline_log.info(co.color('green', 'Paths'))
-        pipeline_log.info((co.color('white', ' Configuration file: ')) + self.parameters_file)
+        pipeline_log.info((co.color('white', 'Configuration file: ')) + self.parameters_file)
         pipeline_log.info((co.color('white', 'Output Directory: ')) + self.results_savepath)
         pipeline_log.info('')
 
@@ -334,92 +352,55 @@ class Preprocessing(object):
         # Load data files provided as list of paths to MFF files
         pipeline_log.info(co.color('periwinkle', 'Loading and filtering specified data from input directory...'))
         self.load_and_filter_data()
-        pipeline_log.info('')
 
-        if 'pre' in self.data:
-            data = self.data['pre']
-            self.resample_data(data, 'Pre-treatment')
+        for key in self.data:
+            data = self.data[key]
+            self.resample_data(data, key)
             # Re-reference data
-            pipeline_log.info(co.color('periwinkle', 'Re-referencing data to average reference...'))
-            self._reference(data, 'Pre-treatment', reference_method='average')
+            pipeline_log.info(co.color('periwinkle', f'Re-referencing {key} data to average reference...'))
+            self._reference(data, key, reference_method='average')
             # Finding bad channels using NoisyChannels
             if self.screen_bad_channels:
-                self._find_bad_channels(data, 'Pre-treatment')
+                self._find_bad_channels(data, key)
                 pipeline_log.info((co.color('white', 'Done.')))
             else:
                 pass
-
             # Segment data into epochs, identify remaining bad segments, and interpolate
             if self.bad_segment_interpolation:
-                pipeline_log.info(co.color('periwinkle', 'Identifying and interpolating bad segments...'))
-                self._interpolate_bad_segments(data, 'Pre-treatment')
+                pipeline_log.info(co.color('periwinkle',
+                                           f'Identifying and interpolating bad segments in {key} data...'))
+                self._interpolate_bad_segments(data, key)
+                pipeline_log.info((co.color('white',
+                                            f'Finished bad segment identification and interpolation for {key} data.')))
             else:
-                pipeline_log.info((co.color('periwinkle', 'Not running bad segment identification and interpolation.')))
-            pipeline_log.info('')
+                pipeline_log.info((co.color('periwinkle',
+                                            f'Not running bad segment identification and interpolation on {key} data.')))
 
-        if 'post' in self.data:
-            self.resample_data(self.data['post'], 'post-treatment')
-        if 'other' in self.data:
-            self.resample_data(self.data['pre'], 'pre-treatment')
-            # Re-reference data
-            pipeline_log.info(co.color('periwinkle', 'Re-referencing data to average reference...'))
-            self._reference()
-            pipeline_log.info('Data referenced to average.')
-            pipeline_log.info('')
-
-            # Finding bad channels using NoisyChannels
-            if self.screen_bad_channels:
-                self._find_bad_channels()
-                pipeline_log.info((co.color('white', 'Done.')))
+            # Run ICALabel to detect bad ICs
+            if self.icalabel:
+                pipeline_log.info(co.color('periwinkle', 'Running ICALabel cleaning (this may take some time)...'))
+                self._iclabel(data, key)
+                pipeline_log.info((co.color('white', 'Finished ICALabel.')))
             else:
                 pass
+            # Add : plot histogram of classification accuracies
             pipeline_log.info('')
 
-            # Segment data into epochs, identify remaining bad segments, and interpolate
-            if self.bad_segment_interpolation:
-                pipeline_log.info(co.color('periwinkle', 'Identifying and interpolating bad segments...'))
-                self._interpolate_bad_segments()
-                pipeline_log.info((co.color('white', 'Finished bad segment identification and interpolation.')))
+            # Run wavelet ICA
+            if self.wICA:
+                pipeline_log.info(co.color('periwinkle', 'Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+                self._wICA(data, key)
+                pipeline_log.info((co.color('white', 'Finished wICA.')))
             else:
-                pipeline_log.info((co.color('periwinkle', 'Not running bad segment identification and interpolation.')))
-            pipeline_log.info('')
+                pipeline_log.info(co.color('periwinkle', 'Not running wICA...'))
 
-        # Run wavelet ICA
-        #if self.wICA:
-        #    pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
-        #    self._wICA()
-        #    pipeline_log.info((co.color('white','  Finished wICA.')))
-        #else:
-        #    pipeline_log.info(co.color('periwinkle','Not running wICA...'))
-        #pipeline_log.info('')
-
-        # Run ICALabel to detect bad ICs
-        if self.icalabel:
-            pipeline_log.info(co.color('periwinkle','Running ICALabel cleaning (this may take some time)...'))
-            self._iclabel()
-            pipeline_log.info((co.color('white','  Finished ICALabel.')))
-        else:
-            pass
-        # Add : plot histogram of classification accuracies
-        pipeline_log.info('')
-
-        # Run wavelet ICA
-        if self.wICA:
-            pipeline_log.info(co.color('periwinkle','Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
-            self._wICA()
-            pipeline_log.info((co.color('white','  Finished wICA.')))
-        else:
-            pipeline_log.info(co.color('periwinkle','Not running wICA...'))
-        pipeline_log.info('')
-
-        # Run ASR
-        if self.asr:
-            pipeline_log.info(co.color('periwinkle','Running artifact subspace reconstruction with cutoff '+str(self.asr_cutoff)+'.'))
-            self._artifact_subspace_reconstruction()
-            pipeline_log.info((co.color('white','  Finished ASR.')))
-        else:
-            pipeline_log.info(co.color('periwinkle','Not running artifact subspace reconstruction...'))
-        pipeline_log.info('')
+            # Run ASR
+            if self.asr:
+                pipeline_log.info(co.color('periwinkle', 'Running artifact subspace reconstruction with cutoff '+str(self.asr_cutoff)+'.'))
+                self._artifact_subspace_reconstruction()
+                pipeline_log.info((co.color('white', 'Finished ASR.')))
+            else:
+                pipeline_log.info(co.color('periwinkle', 'Not running artifact subspace reconstruction...'))
 
     # Resample if necessary
     def resample_data(self, data, name):
@@ -442,16 +423,16 @@ class Preprocessing(object):
         #self.bad_channels += nc.bad_by_correlation 
 
         # Print and log bad channel info
-        pipeline_log.info((co.color('white','  Removed '+str(len(self.bad_channels))+' total:')))
-        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_deviation))+' channels found to be bad by deviation.')))
-        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_hf_noise))+' channels found to be bad by high frequency noise.')))
-        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_correlation))+' channels found to be bad by correlations.')))
-        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_dropout))+' channels found to be bad by dropout.')))
-        pipeline_log.info((co.color('white','  --> Removed '+str(len(nc.bad_by_ransac))+' channels found to be bad by RANSAC.')))
+        pipeline_log.info((co.color('white', 'Removed ' + str(len(self.bad_channels)) + ' total:')))
+        pipeline_log.info((co.color('white', '--> Removed ' + str(len(nc.bad_by_deviation)) + ' channels found to be bad by deviation.')))
+        pipeline_log.info((co.color('white', '--> Removed ' + str(len(nc.bad_by_hf_noise)) + ' channels found to be bad by high frequency noise.')))
+        pipeline_log.info((co.color('white', '--> Removed ' + str(len(nc.bad_by_correlation)) + ' channels found to be bad by correlations.')))
+        pipeline_log.info((co.color('white', '--> Removed ' + str(len(nc.bad_by_dropout)) + ' channels found to be bad by dropout.')))
+        pipeline_log.info((co.color('white', '--> Removed ' + str(len(nc.bad_by_ransac)) + ' channels found to be bad by RANSAC.')))
 
         # Interpolate bad channels
         data.info['bads'].extend(self.bad_channels)
-        print(self.bad_channels)
+        print(f'Bad channels in {name}: {self.bad_channels}')
         data.interpolate_bads(reset_bads=True)  # This will clear out data.info['bads']
         data.info['bads'] = self.bad_channels_list  # Reset data.info['bads'] to always bad channels
         print("Resting state pre data shape after interpolation:", data._data.shape)
@@ -465,109 +446,105 @@ class Preprocessing(object):
             pipeline_log.info((co.color('white', '  Adjusted number of ICALabel components to '+str(adj_num)+'.')))
             self.iclabel_num_components = adj_num
 
-    def _wICA(self):
-        pipeline_log.info((co.color('white', '  --> Fitting ICA for wICA...')))
+    def _wICA(self, data, name):
+        pipeline_log.info((co.color('white', f'--> Fitting ICA for wICA on {name}...')))
 
         ica = FastICA(n_components=self.wICA_num_components, whiten="arbitrary-variance")
-        ica.fit(self.data.get_data().T)  
-        ICs = ica.fit_transform(self.data.get_data().T)
+        ica.fit(data.get_data().T)
+        ICs = ica.fit_transform(data.get_data().T)
 
-        pipeline_log.info((co.color('white', '  --> Removing wICA estimated artifacts...')))
+        pipeline_log.info((co.color('white', '--> Removing wICA estimated artifacts...')))
         wICs, artifacts = wICA(ica, ICs)
-        self.data._data -= artifacts.T
+        data._data -= artifacts.T
 
-        pipeline_log.info((co.color('white', '  --> Generating wICA plots...')))
+        pipeline_log.info((co.color('white', '--> Generating wICA plots...')))
 
         # Save sparkline plots of the IC timeseries pre_ICA, and the resulting thresholded IC timeseries.
-        #save_sparkline_ica(pjoin(self.results_savepath,'ICA_timeseries_pre_wICA.png'), ICs) 
-        #save_sparkline_ica(pjoin(self.results_savepath,'wICA_artifact_timeseries.png'), wICs.T) 
+        save_sparkline_ica(pjoin(self.results_savepath, f'{name}_ICA_timeseries_pre_wICA.png'), ICs)
+        save_sparkline_ica(pjoin(self.results_savepath, f'{name}_wICA_artifact_timeseries.png'), wICs.T)
 
-        # Save the wavelet-ICA-cleaned raw MNE-Python file 
-        pipeline_log.info((co.color('white', '  --> Saving wICA cleaned FIF file...')))
+        # Save the wavelet-ICA-cleaned raw MNE-Python file
+        pipeline_log.info((co.color('white', '--> Saving wICA cleaned FIF file...')))
+        data.save(pjoin(self.results_savepath, f'{name}_wICA_cleaned.fif'), overwrite=True)
 
-        self.data.save(pjoin(self.results_savepath, 'wICA_cleaned.fif'), overwrite=True)
+        # Generate artifact plots for wICA cleaned data
+        pipeline_log.info((co.color('white', '--> Saving wICA cleaned FIF file...')))
+        save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_wICA_cleaned.png'), data)
+        save_sparkline_ica(pjoin(self.results_savepath, f'{name}_wICA_cleaned_eeg_timeseries.png'), data._data)
 
-        # Generate artifact plots for wICA cleaned data 
-        pipeline_log.info((co.color('white', '  --> Saving wICA cleaned FIF file...')))
-        save_eog_plot(pjoin(self.results_savepath, 'eog_wICA_cleaned.png'), self.data)
-        #save_sparkline_ica(pjoin(self.results_savepath,'wICA_cleaned_eeg_timeseries.png'), self.data._data) 
+        pipeline_log.info((co.color('white', f'--> Finished wICA on {name}.')))
 
-        pipeline_log.info((co.color('white', '  --> Finished wICA.')))
-
-    def _iclabel(self):
+    def _iclabel(self, data, name):
         # Generate artifact plots for data before cleaning
-        save_eog_plot(pjoin(self.results_savepath, 'eog_icalabel_precleaning.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_icalabel_precleaning.png'), data)
 
         # Run ICALabel on the current data
-        self.ic_labels, ic_ica, ic_cleaned = iclabel(self.data, num_components=self.iclabel_num_components)
+        self.ic_labels, ic_ica, ic_cleaned = iclabel(data, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
-        save_ica_components(pjoin(self.results_savepath, 'ICALabel_ICA_topoplots.png'), ic_ica,
+        save_ica_components(pjoin(self.results_savepath, f'{name}_ICALabel_ICA_topoplots.png'), ic_ica,
                             ic_label_obj=self.ic_labels)
-        ic_save_path = pjoin(self.results_savepath, 'ICALabel_ICA_topoplots/')
+        ic_save_path = pjoin(self.results_savepath, f'{name}_ICALabel_ICA_topoplots/')
         if not os.path.exists(ic_save_path):
             os.makedirs(ic_save_path)
         for i, label in enumerate(self.ic_labels['labels']):
             save_single_ic_plot(pjoin(ic_save_path, 'IC' + str(i).zfill(3) + '.png'), ic_ica,
-                                self.data, component_number=i, ic_label_obj=self.ic_labels)
+                                data, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
 
         # Generate artifact plots for cleaned data
-        save_eog_plot(pjoin(self.results_savepath, 'eog_icalabel_cleaned.png'), ic_cleaned)
+        save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_icalabel_cleaned.png'), ic_cleaned)
 
         # Generate histogram of icalabel prediction probabilities
-        save_icalabel_prob_hist(pjoin(self.results_savepath, 'icalabel_probability_histogram.png'), self.ic_labels)
+        save_icalabel_prob_hist(pjoin(self.results_savepath, f'{name}_icalabel_probability_histogram.png'), self.ic_labels)
 
         # Replace pipeline data with new cleaned data
-        self.data = ic_cleaned
+        data = ic_cleaned
 
-        # Save the ICALabel-cleaned raw MNE-Python file 
-        ic_cleaned.save(pjoin(self.results_savepath, 'icalabel_cleaned.fif'), overwrite=True)
+        # Save the ICALabel-cleaned raw MNE-Python file
+        ic_cleaned.save(pjoin(self.results_savepath, f'{name}_icalabel_cleaned.fif'), overwrite=True)
 
         # Clean up
         del ic_cleaned, ic_ica
 
     def _reference(self, data, name, reference_method):
         data.set_eeg_reference(reference_method)
-        pipeline_log.info(f'{name} data referenced to average.')
 
     def _interpolate_bad_segments(self, data, name):
         epochs, ar = autoreject_bad_segments(data, method=self.segment_interpolation_method)
-        self.montage = self.data.get_montage()
-        self.data = mne.io.RawArray(X, self.data.info)
-        self.data.set_montage(self.montage)
-
-        pipeline_log.info((co.color('white', 'Finished bad segment identification and interpolation.')))
-
-        if self.memory_intensive:
-            data.save(pjoin(self.results_savepath, 'data_post_autoreject_raw.fif'), overwrite=True)
-
-        #self.epochs.save(pjoin(self.results_savepath,'epochs_cleaned_interpolated.fif'), overwrite=True)
-
-        # Generate rejected segment plot
-        save_autoreject_plot(pjoin(self.results_savepath, 'autoreject_segments.png'), epochs, ar)
+        epochs.save(pjoin(self.results_savepath, f'{name}_epochs_cleaned_interpolated.fif'), overwrite=True)
 
         # Construct new RAW object from epoched data output by autoreject
         X = np.concatenate(epochs.get_data(), axis=1)  # new numpy array of appended epochs
-        del epochs; del X; gc.collect()
 
+        self.montage = data.get_montage()
+        data = mne.io.RawArray(X, data.info)
+        data.set_montage(self.montage)
+
+        if self.memory_intensive:
+            data.save(pjoin(self.results_savepath, f'{name}_data_post_autoreject_raw.fif'), overwrite=True)
+
+        # Generate rejected segment plot
+        save_autoreject_plot(pjoin(self.results_savepath, f'{name}_autoreject_segments.png'), epochs, ar)
         # Generate artifact plots for cleaned data and data without cleaning
-        save_eog_plot(pjoin(self.results_savepath, 'eog_autoreject_segments_cleaned.png'), self.data)
+        save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_autoreject_segments_cleaned.png'), data)
+        del X; del epochs; gc.collect()
 
-    def _artifact_subspace_reconstruction(self):
+
+    def _artifact_subspace_reconstruction(self, data, name):
         # Run ASR
-        data_cleaned = artifact_subspace_reconstruction(self.data, cutoff=self.asr_cutoff)
+        data_cleaned = artifact_subspace_reconstruction(data, cutoff=self.asr_cutoff)
 
         # Generate artifact plots for cleaned data and data without cleaning
-        save_eog_plot(pjoin(self.results_savepath,'pre_ASR.png'), self.data)
-        save_eog_plot(pjoin(self.results_savepath,'post_ASR.png'), data_cleaned)
+        save_eog_plot(pjoin(self.results_savepath, 'pre_ASR.png'), data)
+        save_eog_plot(pjoin(self.results_savepath, 'post_ASR.png'), data_cleaned)
 
         # Replace pipeline data with new cleaned data
-        self.data = data_cleaned
+        data = data_cleaned
         del data_cleaned; gc.collect()
 
         # Save the ASR-cleaned raw MNE-Python file 
-        self.data.save(pjoin(self.results_savepath,'ASR_cleaned.fif'), overwrite=True)
+        data.save(pjoin(self.results_savepath, f'{name}_ASR_cleaned.fif'), overwrite=True)
 
 
 # ------------- Filtering functions ------------- #
