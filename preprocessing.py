@@ -78,7 +78,7 @@ class Preprocessing(object):
         self.date = datetime.now().date().isoformat()
 
         # Set bad channels list
-        self.bad_channels_list=['VREF']
+        self.bad_channels_list = ['VREF']
 
         # Load parameters from parameters_file
         self.load_parameters(parameters_file)
@@ -252,18 +252,20 @@ class Preprocessing(object):
             data_raw_file = os.path.join(self.input_path, filename)
             if not self.data_types['fif']:
                 raw = mne.io.read_raw_egi(data_raw_file, preload=True, verbose='warning')  # MNE 1.4.2
-                # Save PSD of loaded and unfiltered data
-                save_psd(pjoin(self.results_savepath, 'psd_unfiltered' + filename.split('_')[3] + '_' + filename.split('_')[4] + '.png'), raw)
             else:
                 raw = mne.io.read_raw_fif(data_raw_file, preload=True)
 
+            # Set bad channels list to include those specified in class loading (e.g. VREF)
             raw.info["bads"] = self.bad_channels_list
             pipeline_log.info(f'Loaded: {filename}')
+
+            # Save PSD of loaded and unfiltered data
+            save_psd(pjoin(self.results_savepath, 'psd_unfiltered' + filename.split('_')[3] + '_' + filename.split('_')[4] + '.png'), raw)
 
             return raw
 
         def filter_and_concatenate(filenames, data_type):
-            # Sort filenames to ensure file concatenation occurs in order
+            # Sort filenames to ensure file concatenation occurs in order of data collection
             if data_type == 'pre' or data_type == 'post':
                 try:
                     filenames = sorted(filenames, key=lambda f: int(re.search(r'reststate(\d+)', f).group(1)))
@@ -271,7 +273,7 @@ class Preprocessing(object):
                     raise ValueError("Filename does not contain 'reststateX' format")
 
             def apply_filtering(raw_data):
-                # Applies filtering to raw data based on class parameters."""
+                # Applies filtering to raw data based on class parameters.
                 if self.filter_notch and self.filter_band_pass:
                     pipeline_log.info(f'--> {self.notch_freqs[0]} Hz notch filter applied.')
                     pipeline_log.info(f'--> {self.band_pass_low} - {self.band_pass_high} Hz band pass filter applied.')
@@ -318,8 +320,7 @@ class Preprocessing(object):
 
         self.data = {}
         # Decide which data to load using values from parameter file
-        # Iterate over filenames in list and concatenate separate recordings of same type
-        # Then apply filtering
+        # Iterate over filenames in list, concatenate separate recordings of same type, and apply filtering
         if self.data_types['resting_state']:
             if self.data_types['pre']:
                 filenames_pre = [f for f in os.listdir(self.input_path) if 'pre' in f.split('_')]
@@ -349,22 +350,29 @@ class Preprocessing(object):
         pipeline_log.info('')
 
         # Run through pipline steps, printing successful stages and settings to console and log
-        # Load data files provided as list of paths to MFF files
+        # Load data files provided as lists of paths to MFF files
         pipeline_log.info(co.color('periwinkle', 'Loading and filtering specified data from input directory...'))
         self.load_and_filter_data()
 
+        # Iterate over self.data dictionary containing loaded raw data 
+        # With each key corresponding to pre-treatment resting state, post-treatment resting state, or other recording types
         for key in self.data:
             data = self.data[key]
+
+            # Resample data 
             self.resample_data(data, key)
-            # Re-reference data
+
+            # Re-reference data to average reference
             pipeline_log.info(co.color('periwinkle', f'Re-referencing {key} data to average reference...'))
             self._reference(data, key, reference_method='average')
+
             # Finding bad channels using NoisyChannels
             if self.screen_bad_channels:
                 self._find_bad_channels(data, key)
                 pipeline_log.info((co.color('white', 'Done.')))
             else:
                 pass
+
             # Segment data into epochs, identify remaining bad segments, and interpolate
             if self.bad_segment_interpolation:
                 pipeline_log.info(co.color('periwinkle',
@@ -378,9 +386,9 @@ class Preprocessing(object):
 
             # Run ICALabel to detect bad ICs
             if self.icalabel:
-                pipeline_log.info(co.color('periwinkle', 'Running ICALabel cleaning (this may take some time)...'))
+                pipeline_log.info(co.color('periwinkle', f'Running ICALabel cleaning on {key} (this may take some time)...'))
                 self._iclabel(data, key)
-                pipeline_log.info((co.color('white', 'Finished ICALabel.')))
+                pipeline_log.info((co.color('white', f'Finished ICALabel for {key}.')))
             else:
                 pass
             # Add : plot histogram of classification accuracies
@@ -388,7 +396,7 @@ class Preprocessing(object):
 
             # Run wavelet ICA
             if self.wICA:
-                pipeline_log.info(co.color('periwinkle', 'Running wavelet ICA cleaning with '+str(self.wICA_num_components)+' components (this may take some time)...'))
+                pipeline_log.info(co.color('periwinkle', f'Running wavelet ICA cleaning with {self.wICA_num_components} components (this may take some time)...'))
                 self._wICA(data, key)
                 pipeline_log.info((co.color('white', 'Finished wICA.')))
             else:
@@ -396,11 +404,14 @@ class Preprocessing(object):
 
             # Run ASR
             if self.asr:
-                pipeline_log.info(co.color('periwinkle', 'Running artifact subspace reconstruction with cutoff '+str(self.asr_cutoff)+'.'))
+                pipeline_log.info(co.color('periwinkle', f'Running artifact subspace reconstruction with cutoff {self.asr_cutoff}.'))
                 self._artifact_subspace_reconstruction()
                 pipeline_log.info((co.color('white', 'Finished ASR.')))
             else:
                 pipeline_log.info(co.color('periwinkle', 'Not running artifact subspace reconstruction...'))
+
+            # Preprocessing of specified data complete
+            pipeline_log.info(co.color('periwinkle', f'Preprocessing of {key} data complete!'))
 
     # Resample if necessary
     def resample_data(self, data, name):
@@ -487,7 +498,9 @@ class Preprocessing(object):
         ic_save_path = pjoin(self.results_savepath, f'{name}_ICALabel_ICA_topoplots/')
         if not os.path.exists(ic_save_path):
             os.makedirs(ic_save_path)
+
         for i, label in enumerate(self.ic_labels['labels']):
+            pipeline_log.info(f"Processing IC {i}")
             save_single_ic_plot(pjoin(ic_save_path, 'IC' + str(i).zfill(3) + '.png'), ic_ica,
                                 data, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
@@ -543,7 +556,7 @@ class Preprocessing(object):
         data = data_cleaned
         del data_cleaned; gc.collect()
 
-        # Save the ASR-cleaned raw MNE-Python file 
+        # Save the ASR-cleaned raw MNE-Python file
         data.save(pjoin(self.results_savepath, f'{name}_ASR_cleaned.fif'), overwrite=True)
 
 
@@ -574,7 +587,7 @@ def ddencmp(x, wavelet='db1', scale=1.0):
 def wICA(ica, ICs, levels=5, wavelet='coif5', normalize=False, 
          trim_approx=False, thresholding='soft', verbose=True):
     '''
-    Wavelet ICA thresholding. 
+    Wavelet ICA thresholding.
     Args:
         ica: fitted ica object (currently only works with Sklearn's FastICA). TODO: add MNE options.
         ICs: a numpy array of independent components with shape: (#time points, #components).
@@ -598,7 +611,7 @@ def wICA(ica, ICs, levels=5, wavelet='coif5', normalize=False,
     wavelet = pywt.Wavelet(wavelet)
 
     # Iterate over independent components, thresholding each one using a stationary wavelet transform
-    # with soft thresholding. 
+    # with soft thresholding.
     print('  Fitting ICA for wavelet-ICA cleaning...')
     wICs = []
     for i in range(ICs.shape[1]):
@@ -610,7 +623,7 @@ def wICA(ica, ICs, levels=5, wavelet='coif5', normalize=False,
         y = pywt.threshold(swc, thresh, mode=thresholding, substitute=0)
         wICs.append(pywt.iswt(y, wavelet, norm=normalize))
     wICs = np.asarray(wICs)[:,0:ICs.shape[0]].T
-    
+
     print("  Computing cleaned inverse transform...")
     artifacts = ica.inverse_transform(ICs)
 
@@ -632,11 +645,11 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
     variability: brain, muscle artifact, eye blink, heart beat, line noise, channel noise, and other.
     Args:
         mne_raw: a data file in the MNE-Python raw format.
-        n_components: the number of ICA components to estimate. 
+        n_components: the number of ICA components to estimate.
         method: the ICA method to use, see MNE documentation for more information.
-        fit_params: additional arguments passed to the ICA method. 
+        fit_params: additional arguments passed to the ICA method.
         keep: a list of source types to keep; 
-              options are 'brain', 'muscle artifact', 'eye blink', 
+              options are 'brain', 'muscle artifact', 'eye blink',
               'heart beat', 'line noise', 'channel noise', and 'other'.
     Returns:
         ic_labels: a set of labels for the ICs estimated.
@@ -647,15 +660,15 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
     mne_filt = mne_raw.filter(l_freq=1.0, h_freq=100.0, verbose='warning')
 
     # Fit ICA to mne_raw
-    print('  Fitting ICA with '+str(num_components)+' components.')
+    print('  Fitting ICA with ' + str(num_components) + ' components.')
     ica = ICA(n_components=num_components, max_iter="auto", method=method, random_state=42, fit_params=fit_params)
     ica.fit(mne_filt, reject=reject)
-    
+
     # Use label_components function from ICLabel library to classify ICs and get their estimated probabilities
     print('  Using ICALabel to classify independent components.')
     ic_labels = label_components(mne_filt, ica, method="iclabel")
     labels = ic_labels["labels"]
-    
+
     # Exclude ICs not in 'keep' list and reconstruct cleaned raw data
     exclude_idx = [idx for idx, label in enumerate(labels) if label not in keep]
     print(f"  Excluding these ICA components: {exclude_idx}")
@@ -800,10 +813,10 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_ob
         mne_raw: an MNE-Python raw object.
         component_number: the independent component index to plot. 
         ic_label: optional label from ica_label to add to plot topomap title.
-    
+
     '''
     fig = ica.plot_properties(mne_raw, picks=[component_number], verbose=False, show=False)
-    if ic_label_obj is not None: 
+    if ic_label_obj is not None:
         ic_label = ic_label_obj['labels'][component_number]
         ic_prob = ic_label_obj['y_pred_proba'][component_number]
         axs = fig[0].get_axes()
@@ -812,15 +825,15 @@ def save_single_ic_plot(save_file, ica, mne_raw, component_number=0, ic_label_ob
     plt.savefig(save_file)
     plt.close()
 
-def save_eog_plot(save_file, mne_in, channel_list=['E32','E241','E25','E238']):
+def save_eog_plot(save_file, mne_in, channel_list=['E32', 'E241', 'E25', 'E238']):
     '''
     Save an eog artifact plot for the time series in mne_raw to the specified absolute file path.
     Uses MNE-Python's create_eog_epochs and plot_joint functions and defaults to channels 
     ['E32','E241','E25','E238'] which correspond to EGI's 256 channel hydrocel net eye motion channels.
 
     '''
-    average_ecg = mne.preprocessing.create_eog_epochs(mne_in,ch_name=channel_list).average()
-    average_ecg.plot_joint(show=False)
+    average_eog = mne.preprocessing.create_eog_epochs(mne_in,ch_name=channel_list).average()
+    average_eog.plot_joint(show=False)
     sns.despine()
     plt.savefig(save_file)
     plt.close()
