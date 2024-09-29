@@ -178,8 +178,8 @@ class Preprocessing(object):
 
             # data type parameters
             self.data_types = {
-                'pre': eval(parameters.get('data_from', 'pre')),
-                'post': eval(parameters.get('data_from', 'post')),
+                'pre-treatment': eval(parameters.get('data_from', 'pre')),
+                'post-treatment': eval(parameters.get('data_from', 'post')),
                 'resting_state': eval(parameters.get('data_from', 'resting_state')),
                 'TMS': eval(parameters.get('data_from', 'TMS')),
                 'motor': eval(parameters.get('data_from', 'motor')),
@@ -246,7 +246,6 @@ class Preprocessing(object):
         '''
         Data loading fuction: TODO: add MNE loading and docstring.
         '''
-        data_list = []
 
         def load_file(filename):
             data_raw_file = os.path.join(self.input_path, filename)
@@ -266,7 +265,7 @@ class Preprocessing(object):
 
         def filter_and_concatenate(filenames, data_type):
             # Sort filenames to ensure file concatenation occurs in order of data collection
-            if data_type == 'pre' or data_type == 'post':
+            if data_type == 'pre-treatment' or data_type == 'post-treatment':
                 try:
                     filenames = sorted(filenames, key=lambda f: int(re.search(r'reststate(\d+)', f).group(1)))
                 except AttributeError:
@@ -291,6 +290,7 @@ class Preprocessing(object):
                 else:
                     pipeline_log.info('--> No temporal filtering applied.')
 
+            data_list = []
             for f in filenames:
                 raw = load_file(f)
 
@@ -298,17 +298,16 @@ class Preprocessing(object):
                 if self.filter_raws_separately:
                     filtered_raw = apply_filtering(raw)
                     data_list.append(filtered_raw)
+                    if len(data_list) > 1:
+                        data = mne.concatenate_raws(data_list, verbose='warning')
+                    else:
+                        data = filtered_raw
                 else:
-                    # No filtering yet, just append raw data to list
+                    # No filtering yet, just append raw data to list and concatenate
                     data_list.append(raw)
-
-                # Concatenate all data (filtered if self.filter_raws_separately=True, otherwise unfiltered)
-                # add line here to specify that restate 1 recording should be in front
-                data = mne.concatenate_raws(data_list, verbose='warning')
-
-                # If not filtering separately, apply filtering after concatenation
-                if not self.filter_raws_separately:
-                    data = apply_filtering(data)
+                    if len(data_list) > 1:
+                        data = mne.concatenate_raws(data_list, verbose='warning')
+                        data = apply_filtering(data)
 
             # Save the filtered data to raw MNE-Python file
             data.save(pjoin(self.results_savepath, f'{data_type}_filtered.fif'), overwrite=True)
@@ -316,22 +315,24 @@ class Preprocessing(object):
             # Plot filtered data artifacts
             save_eog_plot(pjoin(self.results_savepath, f'{data_type}_eog_filtered.png'), data)
 
+            del data_list, raw; gc.collect()
+
             return data
 
         self.data = {}
         # Decide which data to load using values from parameter file
         # Iterate over filenames in list, concatenate separate recordings of same type, and apply filtering
         if self.data_types['resting_state']:
-            if self.data_types['pre']:
+            if self.data_types['pre-treatment']:
                 filenames_pre = [f for f in os.listdir(self.input_path) if 'pre' in f.split('_')]
-                self.data['pre'] = filter_and_concatenate(filenames_pre, 'pre')
-                pipeline_log.info(f'Pre-treatment resting state data shape: {self.data['pre']._data.shape}')
-                save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_pre.png'), self.data['pre'])
-            if self.data_types['post']:
+                self.data['pre-treatment'] = filter_and_concatenate(filenames_pre, 'pre-treatment')
+                pipeline_log.info(f'Pre-treatment resting state data shape: {self.data['pre-treatment']._data.shape}')
+                save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_pre.png'), self.data['pre-treatment'])
+            if self.data_types['post-treatment']:
                 filenames_post = [f for f in os.listdir(self.input_path) if 'post' in f.split('_')]
-                self.data['post'] = filter_and_concatenate(filenames_post, 'post')
-                pipeline_log.info(f'Post-treatment resting state data shape: {self.data['post']._data.shape}')
-                save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_post.png'), self.data['post'])
+                self.data['post-treatment'] = filter_and_concatenate(filenames_post, 'post-treatment')
+                pipeline_log.info(f'Post-treatment resting state data shape: {self.data['post-treatment']._data.shape}')
+                save_psd(pjoin(self.results_savepath, 'psd_filtered_restingstate_post.png'), self.data['post-treatment'])
             elif self.data_from_TMS or self.data_from_motor or self.data_from_fif:
                 filenames_other = [f for f in os.listdir(self.input_path) if 'treatment' in f]
                 self.data['other'] = filter_and_concatenate(filenames_other, 'other')
@@ -354,13 +355,13 @@ class Preprocessing(object):
         pipeline_log.info(co.color('periwinkle', 'Loading and filtering specified data from input directory...'))
         self.load_and_filter_data()
 
-        # Iterate over self.data dictionary containing loaded raw data 
+        # Iterate over self.data dictionary containing loaded raw data
         # With each key corresponding to pre-treatment resting state, post-treatment resting state, or other recording types
         for key in self.data:
             data = self.data[key]
 
-            # Resample data 
-            self.resample_data(data, key)
+            # Resample data
+            data = self.resample_data(data, key)
 
             # Re-reference data to average reference
             pipeline_log.info(co.color('periwinkle', f'Re-referencing {key} data to average reference...'))
@@ -377,7 +378,7 @@ class Preprocessing(object):
             if self.bad_segment_interpolation:
                 pipeline_log.info(co.color('periwinkle',
                                            f'Identifying and interpolating bad segments in {key} data...'))
-                self._interpolate_bad_segments(data, key)
+                data = self._interpolate_bad_segments(data, key)
                 pipeline_log.info((co.color('white',
                                             f'Finished bad segment identification and interpolation for {key} data.')))
             else:
@@ -386,18 +387,18 @@ class Preprocessing(object):
 
             # Run ICALabel to detect bad ICs
             if self.icalabel:
-                pipeline_log.info(co.color('periwinkle', f'Running ICALabel cleaning on {key} (this may take some time)...'))
-                self._iclabel(data, key)
-                pipeline_log.info((co.color('white', f'Finished ICALabel for {key}.')))
+                pipeline_log.info(co.color('periwinkle', f'Running ICALabel cleaning on {key} data (this may take some time)...'))
+                data = self._iclabel(data, key)
+                pipeline_log.info((co.color('white', f'Finished ICALabel for {key} data.')))
             else:
-                pass
+                pipeline_log.info(co.color('periwinkle', 'Not running ICA...'))
             # Add : plot histogram of classification accuracies
             pipeline_log.info('')
 
             # Run wavelet ICA
             if self.wICA:
                 pipeline_log.info(co.color('periwinkle', f'Running wavelet ICA cleaning with {self.wICA_num_components} components (this may take some time)...'))
-                self._wICA(data, key)
+                data = self._wICA(data, key)
                 pipeline_log.info((co.color('white', 'Finished wICA.')))
             else:
                 pipeline_log.info(co.color('periwinkle', 'Not running wICA...'))
@@ -405,10 +406,13 @@ class Preprocessing(object):
             # Run ASR
             if self.asr:
                 pipeline_log.info(co.color('periwinkle', f'Running artifact subspace reconstruction with cutoff {self.asr_cutoff}.'))
-                self._artifact_subspace_reconstruction()
+                data = self._artifact_subspace_reconstruction(data, key)
                 pipeline_log.info((co.color('white', 'Finished ASR.')))
             else:
                 pipeline_log.info(co.color('periwinkle', 'Not running artifact subspace reconstruction...'))
+
+            # Overwrite filtered raw data stored in the corresponding self.data key with clean data
+            self.data[key] = data
 
             # Preprocessing of specified data complete
             pipeline_log.info(co.color('periwinkle', f'Preprocessing of {key} data complete!'))
@@ -416,8 +420,9 @@ class Preprocessing(object):
     # Resample if necessary
     def resample_data(self, data, name):
         if self.resample:
-            pipeline_log.info(f'Resampling {name} data to {self.resample_rate} Hz.')
+            pipeline_log.info(co.color('periwinkle', f'Resampling {name} data to {self.resample_rate} Hz.'))
             data.resample(self.resample_rate)
+            pipeline_log.info(f'{name} data shape after resampling:, {data._data.shape}')
         return data
 
     def _find_bad_channels(self, data, name):
@@ -431,7 +436,7 @@ class Preprocessing(object):
 
         self.bad_channels = nc.bad_by_deviation + nc.bad_by_hf_noise + nc.bad_by_dropout + nc.bad_by_ransac + nc.bad_by_correlation
         #nc.find_bad_by_correlation(frac_bad=0.05)
-        #self.bad_channels += nc.bad_by_correlation 
+        #self.bad_channels += nc.bad_by_correlation
 
         # Print and log bad channel info
         pipeline_log.info((co.color('white', 'Removed ' + str(len(self.bad_channels)) + ' total:')))
@@ -443,10 +448,10 @@ class Preprocessing(object):
 
         # Interpolate bad channels
         data.info['bads'].extend(self.bad_channels)
-        print(f'Bad channels in {name}: {self.bad_channels}')
+        pipeline_log.info(f'Bad channels in {name} recording: {self.bad_channels}')
         data.interpolate_bads(reset_bads=True)  # This will clear out data.info['bads']
         data.info['bads'] = self.bad_channels_list  # Reset data.info['bads'] to always bad channels
-        print("Resting state pre data shape after interpolation:", data._data.shape)
+        pipeline_log.info(f'{name} data shape after interpolation:, {data._data.shape}')
         adj_num = data._data.shape[0] - len(self.bad_channels)
 
         # Adjust number of independent components
@@ -486,11 +491,14 @@ class Preprocessing(object):
         pipeline_log.info((co.color('white', f'--> Finished wICA on {name}.')))
 
     def _iclabel(self, data, name):
+        # Use copy of data to avoid modifying in place
+        data_copy = data.copy()
+
         # Generate artifact plots for data before cleaning
         save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_icalabel_precleaning.png'), data)
 
         # Run ICALabel on the current data
-        self.ic_labels, ic_ica, ic_cleaned = iclabel(data, num_components=self.iclabel_num_components)
+        self.ic_labels, ic_ica, ic_cleaned = iclabel(data_copy, num_components=self.iclabel_num_components)
 
         # Save ICA topoplots and a folder of individual IC statistic plots
         save_ica_components(pjoin(self.results_savepath, f'{name}_ICALabel_ICA_topoplots.png'), ic_ica,
@@ -502,7 +510,7 @@ class Preprocessing(object):
         for i, label in enumerate(self.ic_labels['labels']):
             pipeline_log.info(f"Processing IC {i}")
             save_single_ic_plot(pjoin(ic_save_path, 'IC' + str(i).zfill(3) + '.png'), ic_ica,
-                                data, component_number=i, ic_label_obj=self.ic_labels)
+                                data_copy, component_number=i, ic_label_obj=self.ic_labels)
             plt.close()
 
         # Generate artifact plots for cleaned data
@@ -511,14 +519,13 @@ class Preprocessing(object):
         # Generate histogram of icalabel prediction probabilities
         save_icalabel_prob_hist(pjoin(self.results_savepath, f'{name}_icalabel_probability_histogram.png'), self.ic_labels)
 
-        # Replace pipeline data with new cleaned data
-        data = ic_cleaned
-
         # Save the ICALabel-cleaned raw MNE-Python file
-        ic_cleaned.save(pjoin(self.results_savepath, f'{name}_icalabel_cleaned.fif'), overwrite=True)
+        ic_cleaned.save(pjoin(self.results_savepath, f'{name}_icalabel_cleaned.fif'), overwrite=False)
 
         # Clean up
-        del ic_cleaned, ic_ica
+        del ic_ica; gc.collect()
+
+        return ic_cleaned
 
     def _reference(self, data, name, reference_method):
         data.set_eeg_reference(reference_method)
@@ -541,7 +548,10 @@ class Preprocessing(object):
         save_autoreject_plot(pjoin(self.results_savepath, f'{name}_autoreject_segments.png'), epochs, ar)
         # Generate artifact plots for cleaned data and data without cleaning
         save_eog_plot(pjoin(self.results_savepath, f'{name}_eog_autoreject_segments_cleaned.png'), data)
+
         del X; del epochs; gc.collect()
+
+        return data
 
 
     def _artifact_subspace_reconstruction(self, data, name):
@@ -648,7 +658,7 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
         n_components: the number of ICA components to estimate.
         method: the ICA method to use, see MNE documentation for more information.
         fit_params: additional arguments passed to the ICA method.
-        keep: a list of source types to keep; 
+        keep: a list of source types to keep;
               options are 'brain', 'muscle artifact', 'eye blink',
               'heart beat', 'line noise', 'channel noise', and 'other'.
     Returns:
@@ -672,24 +682,28 @@ def iclabel(mne_raw, num_components=20, keep=["brain"], method='infomax', fit_pa
     # Exclude ICs not in 'keep' list and reconstruct cleaned raw data
     exclude_idx = [idx for idx, label in enumerate(labels) if label not in keep]
     print(f"  Excluding these ICA components: {exclude_idx}")
+    print(f'Number of ICA components excluded: {len(exclude_idx)}')
     cleaned = ica.apply(mne_raw, exclude=exclude_idx, verbose=False)
     return ic_labels, ica, cleaned
 
 def autoreject_bad_segments(raw, segment_length=1.0, method='autoreject'):
     # generate epochs object from raw
-    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True); del raw; gc.collect()
+    epochs = mne.make_fixed_length_epochs(raw, duration=segment_length, preload=True)
 
     # Use mne-compatible autoreject library to clean epoched data
     n_interpolates = np.array([1, 4, 32])
     consensus_percs = np.linspace(0, 1.0, 11)
 
-    if method=='autoreject':
+    if method == 'autoreject':
         ar = AutoReject(n_interpolates, consensus_percs, thresh_method='bayesian_optimization', random_state=42)
-    elif method=='ransac':
+    elif method == 'ransac':
         ar = Ransac()
     else:
         raise pipeline_log.ValueError("Specified bad segment method not implemented. Current options are 'autoreject' and 'ransac'.")
     epochs = ar.fit_transform(epochs)
+
+    del raw; gc.collect()
+
     return epochs, ar
 
 #def artifact_subspace_reconstruction(raw, cutoff=20):
