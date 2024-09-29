@@ -420,8 +420,9 @@ class Preprocessing(object):
     # Resample if necessary
     def resample_data(self, data, name):
         if self.resample:
-            pipeline_log.info(f'Resampling {name} data to {self.resample_rate} Hz.')
+            pipeline_log.info(co.color('periwinkle', f'Resampling {name} data to {self.resample_rate} Hz.'))
             data.resample(self.resample_rate)
+            pipeline_log.info(f'{name} data shape after resampling:, {data._data.shape}')
         return data
 
     def _find_bad_channels(self, data, name):
@@ -447,10 +448,10 @@ class Preprocessing(object):
 
         # Interpolate bad channels
         data.info['bads'].extend(self.bad_channels)
-        print(f'Bad channels in {name}: {self.bad_channels}')
+        pipeline_log.info(f'Bad channels in {name} recording: {self.bad_channels}')
         data.interpolate_bads(reset_bads=True)  # This will clear out data.info['bads']
         data.info['bads'] = self.bad_channels_list  # Reset data.info['bads'] to always bad channels
-        print("Resting state pre-treatment data shape after interpolation:", data._data.shape)
+        pipeline_log.info(f'{name} data shape after interpolation:, {data._data.shape}')
         adj_num = data._data.shape[0] - len(self.bad_channels)
 
         # Adjust number of independent components
